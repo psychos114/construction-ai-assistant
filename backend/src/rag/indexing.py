@@ -12,7 +12,7 @@ from llama_index.core.ingestion import IngestionPipeline
 
 from src.config import CHUNK_SIZE, CHUNK_OVERLAP, INDEX_STORAGE_DIR, DOCUMENTS_DIR
 from src.rag.llm import get_llm
-from src.rag.embedding import ModelScopeEmbedding
+from src.rag.embedding import get_embedding
 
 
 def load_documents(docs_dir: Path | None = None):
@@ -53,12 +53,17 @@ def build_index(
     """
     persist_dir = persist_dir or INDEX_STORAGE_DIR
 
+    # Embedding 模型
+    embed_model = get_embedding()
+
     # 如果索引已存在且不强制重建，直接加载
     if persist_dir.exists() and any(persist_dir.iterdir()) and not force_rebuild:
         print(f"从 {persist_dir} 加载已有索引...")
         try:
             storage_context = StorageContext.from_defaults(persist_dir=str(persist_dir))
-            index = load_index_from_storage(storage_context)
+            index = load_index_from_storage(
+                storage_context, embed_model=embed_model
+            )
             print("索引加载成功。")
             return index
         except Exception as e:
@@ -76,9 +81,6 @@ def build_index(
         paragraph_separator="\n\n",
         secondary_chunking_regex="[。；！？]",
     )
-
-    # Embedding 模型
-    embed_model = ModelScopeEmbedding()
 
     # 使用 IngestionPipeline 流程化处理
     print(f"正在处理 {len(documents)} 个文档...")

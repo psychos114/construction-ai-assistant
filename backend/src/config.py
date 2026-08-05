@@ -23,6 +23,12 @@ MODELSCOPE_BASE_URL: str = os.getenv("MODELSCOPE_BASE_URL", "https://api.modelsc
 EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
 RERANK_MODEL: str = os.getenv("RERANK_MODEL", "Qwen/Qwen3-Reranker-8B")
 
+# Embedding 模式: "local" (离线, 默认) 或 "api" (需网络)
+EMBEDDING_MODE: str = os.getenv("EMBEDDING_MODE", "local")
+LOCAL_EMBEDDING_MODEL: str = os.getenv(
+    "LOCAL_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"
+)
+
 # ==================== 应用配置 ====================
 BACKEND_PORT: int = int(os.getenv("BACKEND_PORT", "8000"))
 FRONTEND_PORT: int = int(os.getenv("FRONTEND_PORT", "3000"))
@@ -51,8 +57,8 @@ def validate_config() -> bool:
     missing = []
     if not DEEPSEEK_API_KEY:
         missing.append("DEEPSEEK_API_KEY")
-    if not MODELSCOPE_API_KEY:
-        missing.append("MODELSCOPE_API_KEY")
+    if EMBEDDING_MODE == "api" and not MODELSCOPE_API_KEY:
+        missing.append("MODELSCOPE_API_KEY (EMBEDDING_MODE=api)")
     if missing:
         raise ValueError(
             f"缺少必要的 API Key: {', '.join(missing)}。"

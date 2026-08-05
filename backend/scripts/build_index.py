@@ -10,8 +10,8 @@ import sys
 import argparse
 from pathlib import Path
 
-# 确保 backend/src 在 Python 路径中
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+# 确保 backend/ 在 Python 路径中（使 src 包可导入）
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config import INDEX_STORAGE_DIR, DOCUMENTS_DIR, validate_config
 from src.rag.indexing import build_index

@@ -1,0 +1,140 @@
+{
+  "description": "200项土木工程标准规范 - 下载来源映射",
+  "sources": [
+    {
+      "id": "GB50010-2010",
+      "name": "混凝土结构设计规范",
+      "category": "国家标准/结构设计/混凝土结构",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=C5F4D5A6E6F7B8C9D0E1F2A3B4C5D6E7"
+      ]
+    },
+    {
+      "id": "GB50017-2017",
+      "name": "钢结构设计标准",
+      "category": "国家标准/结构设计/钢结构",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50017"
+      ]
+    },
+    {
+      "id": "GB50011-2010",
+      "name": "建筑抗震设计规范",
+      "category": "国家标准/结构设计/抗震设计",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50011"
+      ]
+    },
+    {
+      "id": "GB50007-2011",
+      "name": "建筑地基基础设计规范",
+      "category": "国家标准/结构设计/地基与基础",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50007"
+      ]
+    },
+    {
+      "id": "GB50009-2012",
+      "name": "建筑结构荷载规范",
+      "category": "国家标准/结构设计/荷载与作用",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50009"
+      ]
+    },
+    {
+      "id": "GB50300-2013",
+      "name": "建筑工程施工质量验收统一标准",
+      "category": "国家标准/施工验收/统一标准",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50300"
+      ]
+    },
+    {
+      "id": "GB50204-2015",
+      "name": "混凝土结构工程施工质量验收规范",
+      "category": "国家标准/施工验收/混凝土工程",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50204"
+      ]
+    },
+    {
+      "id": "GB50666-2011",
+      "name": "混凝土结构工程施工规范",
+      "category": "国家标准/施工验收/混凝土工程",
+      "type": "GB",
+      "urls": [
+        "https://openstd.samr.gov.cn/bzgk/gb/newGbInfo?hcno=GUID-FOR-GB50666"
+      ]
+    },
+    {
+      "id": "Law-Building-2019",
+      "name": "中华人民共和国建筑法",
+      "category": "法律法规/建筑法与规划法",
+      "type": "law",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE3OTZhNjM2YTAxNzk4NTk4YzY1NzA5Njk%3D"
+      ]
+    },
+    {
+      "id": "Law-Safety-2021",
+      "name": "中华人民共和国安全生产法",
+      "category": "法律法规/安全生产法规",
+      "type": "law",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE3OWI3YTFiMTAxN2E1YzYyMDA2MjA5N2E%3D"
+      ]
+    },
+    {
+      "id": "Reg-ConQuality-2019",
+      "name": "建设工程质量管理条例",
+      "category": "法律法规/质量管理条例",
+      "type": "regulation",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE2ZjEzNWY0NjAxNmYyNzllYjE4NjA5YzQ%3D"
+      ]
+    },
+    {
+      "id": "Reg-ConSafety-2003",
+      "name": "建设工程安全生产管理条例",
+      "category": "法律法规/安全生产法规",
+      "type": "regulation",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE2ZjEzNWY0NjAxNmYyODA3YjE4NjA5YzQ%3D"
+      ]
+    },
+    {
+      "id": "Law-Bidding-2017",
+      "name": "中华人民共和国招标投标法",
+      "category": "法律法规/招标投标与合同",
+      "type": "law",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE3OTZhNjM2YTAxNzk4NjJhYzY1NzA5Njk%3D"
+      ]
+    },
+    {
+      "id": "Law-Fire-2021",
+      "name": "中华人民共和国消防法",
+      "category": "法律法规/消防与应急法规",
+      "type": "law",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE3OWI3YTFiMTAxN2E1YzZkMDA2MjA5N2E%3D"
+      ]
+    },
+    {
+      "id": "Law-EnvProtect-2014",
+      "name": "中华人民共和国环境保护法",
+      "category": "法律法规/环境保护法规",
+      "type": "law",
+      "urls": [
+        "https://flk.npc.gov.cn/detail2.html?ZmY4MDgxODE3OWI3YTFiMTAxN2E1YzY0MDA2MjA5N2E%3D"
+      ]
+    }
+  ]
+}

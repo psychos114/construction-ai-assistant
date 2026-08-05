@@ -1,21 +1,67 @@
 """
-Embedding 模块 — 魔搭社区 Embedding 模型适配器
-封装 ModelScope API 为 LlamaIndex BaseEmbedding 子类
+Embedding 模块 — 双模式支持
+  1. 本地模式 (默认): sentence-transformers + BAAI/bge-small-zh-v1.5
+  2. API 模式: ModelScope Qwen3-Embedding-8B
 """
 from typing import Any, List
-import httpx
 from llama_index.core.embeddings import BaseEmbedding
 from src.config import (
+    EMBEDDING_MODE,
     MODELSCOPE_API_KEY,
     MODELSCOPE_BASE_URL,
     EMBEDDING_MODEL,
+    LOCAL_EMBEDDING_MODEL,
 )
 
 
-class ModelScopeEmbedding(BaseEmbedding):
-    """魔搭社区 Embedding 模型适配器
+class LocalEmbedding(BaseEmbedding):
+    """本地 Embedding — 使用 sentence-transformers 离线运行
 
-    调用 ModelScope 文本向量化 API，
+    模型: BAAI/bge-small-zh-v1.5 (约 100MB, 中文优化)
+    首次运行自动下载，之后完全离线。
+    """
+
+    _model_name: str
+    _model: Any = None
+
+    def __init__(self, model_name: str | None = None, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._model_name = model_name or LOCAL_EMBEDDING_MODEL
+
+    def _load_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self._model_name)
+
+    @classmethod
+    def class_name(cls) -> str:
+        return "LocalEmbedding"
+
+    def _get_text_embedding(self, text: str) -> List[float]:
+        self._load_model()
+        return self._model.encode(text, normalize_embeddings=True).tolist()
+
+    def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        self._load_model()
+        return self._model.encode(texts, normalize_embeddings=True).tolist()
+
+    def _get_query_embedding(self, query: str) -> List[float]:
+        return self._get_text_embedding(query)
+
+    async def _aget_text_embedding(self, text: str) -> List[float]:
+        return self._get_text_embedding(text)
+
+    async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
+        return self._get_text_embeddings(texts)
+
+    async def _aget_query_embedding(self, query: str) -> List[float]:
+        return self._get_query_embedding(query)
+
+
+class ModelScopeEmbedding(BaseEmbedding):
+    """魔搭社区 API Embedding 适配器（需要网络且 API 可达）
+
+    调用 ModelScope 文本向量化 API,
     模型: Qwen/Qwen3-Embedding-8B
     """
 
@@ -43,7 +89,7 @@ class ModelScopeEmbedding(BaseEmbedding):
         return "ModelScopeEmbedding"
 
     def _call_embed_api(self, texts: List[str]) -> List[List[float]]:
-        """调用 ModelScope Embedding API（批量）"""
+        import httpx
         with httpx.Client(timeout=self._timeout) as client:
             response = client.post(
                 f"{self._base_url}/api/v1/models/{self._model}/embeddings",
@@ -58,7 +104,7 @@ class ModelScopeEmbedding(BaseEmbedding):
             return [item["embedding"] for item in data["data"]]
 
     async def _acall_embed_api(self, texts: List[str]) -> List[List[float]]:
-        """异步调用 ModelScope Embedding API（批量）"""
+        import httpx
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             response = await client.post(
                 f"{self._base_url}/api/v1/models/{self._model}/embeddings",
@@ -72,32 +118,30 @@ class ModelScopeEmbedding(BaseEmbedding):
             data = response.json()
             return [item["embedding"] for item in data["data"]]
 
-    # ===== 同步方法 =====
-
     def _get_text_embedding(self, text: str) -> List[float]:
-        """获取单条文本向量（Abstract — 必须实现）"""
         return self._call_embed_api([text])[0]
 
     def _get_text_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """批量获取文本向量（Override 基类默认循环，一次 API 调用完成）"""
         return self._call_embed_api(texts)
 
     def _get_query_embedding(self, query: str) -> List[float]:
-        """获取查询向量（Abstract — 必须实现）"""
         return self._call_embed_api([query])[0]
 
-    # ===== 异步方法 =====
-
     async def _aget_text_embedding(self, text: str) -> List[float]:
-        """异步获取单条文本向量"""
         result = await self._acall_embed_api([text])
         return result[0]
 
     async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """异步批量获取文本向量"""
         return await self._acall_embed_api(texts)
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
-        """异步获取查询向量"""
         result = await self._acall_embed_api([query])
         return result[0]
+
+
+def get_embedding() -> BaseEmbedding:
+    """根据配置获取 Embedding 实例"""
+    if EMBEDDING_MODE == "api":
+        return ModelScopeEmbedding()
+    else:
+        return LocalEmbedding()
