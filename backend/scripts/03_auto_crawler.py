@@ -70,7 +70,11 @@ def find_list_page(client: httpx.Client, standard_id: str, standard_name: str) -
         return None
 
     # 检查每个 list 页面的标题，匹配标准名称
-    name_keywords = standard_name[:8].replace(" ", "")
+    clean_id = standard_id.replace(" ", "").replace("-", "").replace("/", "").replace("(", "").replace(")", "")
+    # 取标准编号中的数字部分作为核心匹配key
+    id_digits = re.search(r'(\d[\d.]+)', clean_id)
+    id_key = id_digits.group(1).replace(".", "") if id_digits else clean_id[:6]
+
     for lid in list_ids:
         try:
             lresp = client.get(f"{BASE}/m/list-{lid}.htm",
@@ -78,18 +82,17 @@ def find_list_page(client: httpx.Client, standard_id: str, standard_name: str) -
             title_match = re.search(r'<title>([^<]+)</title>', lresp.text)
             if title_match:
                 title = title_match.group(1)
-                # 用标准编号+名称关键词匹配
-                clean_id = standard_id.replace(" ", "").replace("-", "").replace("/", "")
-                if clean_id[:5].upper() in title.upper().replace(" ", "").replace("-", ""):
+                title_clean = title.upper().replace(" ", "").replace("-", "").replace("（", "").replace("）", "")
+                # 精确匹配：标准编号的数字部分出现在标题中
+                if id_key in title_clean:
                     return f"list-{lid}.htm"
-                if name_keywords in title.replace(" ", ""):
+                # 名称关键词匹配（前6个字）
+                name_kw = standard_name[:6]
+                if name_kw in title:
                     return f"list-{lid}.htm"
         except Exception:
             continue
 
-    # 如果没精确匹配，返回第一个有结果的list
-    if list_ids:
-        return f"list-{list_ids.pop()}.htm"
     return None
 
 
