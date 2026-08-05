@@ -1,7 +1,3 @@
-/**
- * 规范来源引用卡片
- * @param {{ source: { standard_id: string, standard_name: string, chapter: string, clause: string, content: string, score: number } }} props
- */
 function SourceCard({ source }) {
   const {
     standard_id = "",
@@ -15,18 +11,16 @@ function SourceCard({ source }) {
   return (
     <div className="source-card">
       <div className="source-card-header">
-        <span className="source-card-id">
-          {standard_id}
-          {clause ? ` · 第${clause}条` : ""}
-        </span>
-        {chapter && <span className="source-card-chapter">{chapter}</span>}
+        <span className="source-id">{standard_id || "标准引用"}</span>
+        {chapter && <span className="source-chapter">{chapter}</span>}
+        {clause && <span className="source-chapter">§{clause}</span>}
       </div>
       {standard_name && (
-        <div style={{ fontSize: "0.78rem", color: "var(--color-text-secondary)", marginBottom: 4 }}>
-          {standard_name}
-        </div>
+        <div className="source-name">{standard_name}</div>
       )}
-      {content && <div className="source-card-content">{content}</div>}
+      {content && (
+        <div className="source-excerpt">{content}</div>
+      )}
     </div>
   );
 }
