@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import ChatWindow from "./components/ChatWindow";
+import FilePanel from "./components/FilePanel";
 import { healthCheck } from "./api/chat";
 
 function App() {
@@ -38,9 +39,12 @@ function App() {
           )}
         </div>
       </header>
-      <main className="app-main">
-        <ChatWindow />
-      </main>
+      <div className="app-body">
+        <FilePanel />
+        <main className="app-main">
+          <ChatWindow />
+        </main>
+      </div>
     </div>
   );
 }

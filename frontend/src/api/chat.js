@@ -1,34 +1,74 @@
 /**
- * API 调用封装 — 与后端 /api/chat 通信
+ * API 封装 — 支持普通 + 流式两种模式
  */
 
 const API_BASE = "/api";
 
-/**
- * 发送聊天请求
- * @param {string} question - 用户问题
- * @returns {Promise<{answer: string, sources: Array}>}
- */
+/** 普通请求 */
 export async function sendMessage(question) {
-  const response = await fetch(`${API_BASE}/chat`, {
+  const resp = await fetch(`${API_BASE}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
   });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(error.detail || `请求失败 (${response.status})`);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || `请求失败 (${resp.status})`);
   }
-
-  return response.json();
+  return resp.json();
 }
 
 /**
- * 健康检查
- * @returns {Promise<{status: string, llm_model: string, index_ready: boolean}>}
+ * 流式请求 — 返回 ReadableStream
+ *
+ * 使用方式:
+ *   const stream = sendMessageStream("问题", { signal: abortController.signal });
+ *   for await (const event of stream) {
+ *     if (event.type === "token")  追加文本
+ *     if (event.type === "source") 添加引用
+ *     if (event.type === "done")   流结束
+ *   }
  */
+export async function* sendMessageStream(question, options = {}) {
+  const resp = await fetch(`${API_BASE}/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+    signal: options.signal,
+  });
+
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || `请求失败 (${resp.status})`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n\n");
+    buffer = lines.pop(); // 保留不完整的行
+
+    for (const line of lines) {
+      if (!line.trim() || !line.startsWith("data: ")) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        yield data;
+        if (data.type === "done" || data.type === "error") return;
+      } catch {
+        // 跳过解析失败的行
+      }
+    }
+  }
+}
+
+/** 健康检查 */
 export async function healthCheck() {
-  const response = await fetch(`${API_BASE}/health`);
-  return response.json();
+  const resp = await fetch(`${API_BASE}/health`);
+  return resp.json();
 }

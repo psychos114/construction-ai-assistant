@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from "react";
-import { sendMessage } from "../api/chat";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { sendMessageStream } from "../api/chat";
 import MessageBubble from "./MessageBubble";
 
 const SUGGESTED = [
@@ -15,34 +15,82 @@ function ChatWindow() {
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
+  const abortRef = useRef(null);
+
+  // 组件卸载时取消进行中的 SSE 请求
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const handleSend = async (text) => {
+  const handleSend = useCallback(async (text) => {
     const question = (text || input).trim();
     if (!question || loading) return;
 
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", content: question }]);
+    const userMsg = { role: "user", content: question };
+    const aiMsg = { role: "assistant", content: "", analysis: null, sources: [], streaming: true };
+    setMessages((prev) => [...prev, userMsg, aiMsg]);
     setLoading(true);
 
     try {
-      const result = await sendMessage(question);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: result.answer, sources: result.sources || [] },
-      ]);
+      // 创建 AbortController 以支持取消请求
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const stream = sendMessageStream(question, { signal: controller.signal });
+
+      for await (const event of stream) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || last.role !== "assistant") return prev;
+
+          // 不可变更新：创建新对象，不修改 prev state（React 严格模式安全）
+          let updates = {};
+
+          if (event.type === "analysis") {
+            updates = { analysis: event.data };
+          } else if (event.type === "token") {
+            updates = { content: last.content + event.content };
+          } else if (event.type === "source") {
+            updates = { sources: [...last.sources, event.data] };
+          } else if (event.type === "done") {
+            updates = { streaming: false };
+          } else if (event.type === "error") {
+            updates = { content: `抱歉，查询出错：${event.message}`, streaming: false };
+          } else {
+            return prev;
+          }
+
+          const updated = [...prev];
+          updated[updated.length - 1] = { ...last, ...updates };
+          return updated;
+        });
+      }
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `抱歉，查询出错：${err.message}`, sources: [] },
-      ]);
+      // AbortError 是正常取消，不需显示错误
+      if (err.name === "AbortError") return;
+
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (!last || last.role !== "assistant") return prev;
+        const updated = [...prev];
+        updated[updated.length - 1] = {
+          ...last,
+          content: `网络错误：${err.message}`,
+          streaming: false,
+        };
+        return updated;
+      });
     } finally {
+      abortRef.current = null;
       setLoading(false);
     }
-  };
+  }, [input, loading]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -77,7 +125,7 @@ function ChatWindow() {
           ))
         )}
 
-        {loading && (
+        {loading && messages[messages.length - 1]?.streaming === false && (
           <div className="message assistant">
             <div className="message-label">思考中</div>
             <div className="message-body">

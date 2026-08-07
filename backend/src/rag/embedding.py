@@ -3,6 +3,7 @@ Embedding 模块 — 双模式支持
   1. 本地模式 (默认): sentence-transformers + BAAI/bge-small-zh-v1.5
   2. API 模式: ModelScope Qwen3-Embedding-8B
 """
+import asyncio
 from typing import Any, List
 from llama_index.core.embeddings import BaseEmbedding
 from src.config import (
@@ -49,13 +50,21 @@ class LocalEmbedding(BaseEmbedding):
         return self._get_text_embedding(query)
 
     async def _aget_text_embedding(self, text: str) -> List[float]:
-        return self._get_text_embedding(text)
+        self._load_model()
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._model.encode(text, normalize_embeddings=True).tolist()
+        )
 
     async def _aget_text_embeddings(self, texts: List[str]) -> List[List[float]]:
-        return self._get_text_embeddings(texts)
+        self._load_model()
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, lambda: self._model.encode(texts, normalize_embeddings=True).tolist()
+        )
 
     async def _aget_query_embedding(self, query: str) -> List[float]:
-        return self._get_query_embedding(query)
+        return await self._aget_text_embedding(query)
 
 
 class ModelScopeEmbedding(BaseEmbedding):

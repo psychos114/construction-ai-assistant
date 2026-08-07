@@ -70,8 +70,10 @@ class ModelScopeReranker(BaseNodePostprocessor):
             nodes = sorted(nodes, key=lambda n: n.score or 0.0, reverse=True)
             return nodes[: self._top_n]
 
-        except Exception:
+        except Exception as e:
             # Rerank 失败时降级：返回原始排序的前 top_n
+            print(f"[WARN] Rerank API 调用失败 ({e})，降级为原始排序。"
+                  f"请检查 MODELSCOPE_API_KEY 和网络连接。")
             return nodes[: self._top_n]
 
     def _call_rerank_api(self, query: str, documents: List[str]) -> List[float]:

@@ -7,9 +7,11 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+*.log
 
 # RAG
 backend/storage/
+backend/uploads/
 backend/src/data/documents/*.pdf
 
 # Node
@@ -29,3 +31,13 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Python 虚拟环境
+env/
+env.bak/
+.venv/
+
+# 临时文件
+*.tmp
+*.bak
+*.orig

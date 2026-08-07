@@ -17,6 +17,13 @@ DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 
+# DeepSeek 推理模型（deepseek-reasoner 输出思维链）
+DEEPSEEK_REASONING_MODEL: str = os.getenv(
+    "DEEPSEEK_REASONING_MODEL", "deepseek-reasoner"
+)
+# 是否启用推理链模式
+USE_REASONING: bool = os.getenv("USE_REASONING", "false").lower() == "true"
+
 # ==================== ModelScope (Embedding + Rerank) ====================
 MODELSCOPE_API_KEY: str = os.getenv("MODELSCOPE_API_KEY", "")
 MODELSCOPE_BASE_URL: str = os.getenv("MODELSCOPE_BASE_URL", "https://api.modelscope.cn")
@@ -50,6 +57,23 @@ DOCUMENTS_DIR: Path = ROOT_DIR / "backend" / "src" / "data" / "documents"
 # 确保目录存在
 INDEX_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ==================== 用户文件配置 ====================
+# 用户上传文件存放目录
+USER_UPLOADS_DIR: Path = ROOT_DIR / "backend" / "uploads"
+# 用户 FAISS 向量索引持久化目录
+USER_FAISS_DIR: Path = ROOT_DIR / "backend" / "storage" / "user_faiss"
+# 用户文件索引检索数量
+USER_TOP_K: int = 5
+# FAISS 向量维度（必须与 Embedding 模型输出匹配：BAAI/bge-small-zh-v1.5 = 512）
+EMBEDDING_DIM: int = 512
+# 支持的文档格式
+ALLOWED_EXTENSIONS: set = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"}
+# 最大文件大小 (50MB)
+MAX_FILE_SIZE: int = 50 * 1024 * 1024
+
+USER_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+USER_FAISS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def validate_config() -> bool:

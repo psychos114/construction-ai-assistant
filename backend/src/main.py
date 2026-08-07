@@ -11,7 +11,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router
-from src.config import BACKEND_PORT, APP_ENV
+from src.api.files import router as files_router
+from src.config import BACKEND_PORT, APP_ENV, validate_config
 
 app = FastAPI(
     title="土木工程智能助手 API",
@@ -32,10 +33,18 @@ app.add_middleware(
 
 # 挂载路由
 app.include_router(router)
+app.include_router(files_router)
 
 # 启动时检查
 @app.on_event("startup")
 async def startup():
+    try:
+        validate_config()
+    except ValueError as e:
+        print(f"❌ 配置错误: {e}")
+        print("请检查 .env 文件中的 API Key 配置。")
+        import sys
+        sys.exit(1)
     print(f"🚀 土木工程智能助手 API 启动 (端口 {BACKEND_PORT})")
     print(f"📄 API 文档: http://localhost:{BACKEND_PORT}/docs")
 
