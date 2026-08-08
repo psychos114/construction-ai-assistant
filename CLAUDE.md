@@ -53,6 +53,16 @@ cd backend && python scripts/03_auto_crawler.py --dry-run --priority S        # 
 cd backend && python scripts/01_download.py --type law
 ```
 
+### MCP 服务器
+
+```bash
+# 启动 MCP 服务器 (stdio 模式，供 Claude Code 等 MCP 客户端调用)
+cd backend && python -m src.mcp_server.server
+
+# 列出所有已注册的 MCP 工具
+cd backend && python test_tools.py
+```
+
 ## 架构
 
 ### 整体数据流
@@ -108,6 +118,11 @@ USE_REASONING=true 时额外增加：
 | API 路由 | `src/api/routes.py` | `GET /api/health`、`POST /api/chat`、`POST /api/chat/stream`；索引懒加载；`USE_REASONING` 分支选择结构化 JSON 或标准流式模式 |
 | API Schema | `src/api/schemas.py` | Pydantic 请求/响应模型（含用户文件相关 schema） |
 | 文件 API | `src/api/files.py` | `POST /api/files/upload`、`GET /api/files`、`GET /api/files/{id}`、`DELETE /api/files/{id}`、`POST /api/files/search` |
+| MCP 服务器 | `src/mcp_server/server.py` | MCP (Model Context Protocol) 服务器，注册 `baidu_search` 和 `tavily_search` 两个工具，通过 stdio 与 MCP 客户端（如 Claude Code）通信 |
+| MCP 工具 | `src/mcp_server/baidu_tool.py` | `search_baidu()` 包装，供 MCP 服务器调用 |
+| MCP 工具 | `src/mcp_server/tavily_tool.py` | Tavily Search API 封装，调用 `TavilyClient` 返回搜索结果 |
+| 百度搜索 | `src/mcp_server/baidu_tools.py` | 百度网页搜索爬虫：HTML 解析（BeautifulSoup + 自定义 HTMLParser 双解析器）、重定向跟踪、分页、反爬处理 |
+| 共享模块 | `src/shared/` | `common.py`（SearchResult/Evidence 数据类）、`config.py`（百度搜索参数）、`crawler.py`（Article 抓取器，当前为占位实现） |
 | LLM | `src/rag/llm.py` | `get_llm()` 工厂函数，通过 OpenAI 兼容接口 (`OpenAILike`) 接入 DeepSeek-Chat，默认 max_tokens=2048。支持可选参数 `model`、`temperature`、`max_tokens`。**注意**：结构化 JSON 模式 (`USE_REASONING=true`) 不经过此模块，而是直接用 `httpx` 请求 DeepSeek API，max_tokens=4096 |
 | Embedding | `src/rag/embedding.py` | 双模式：`LocalEmbedding` (sentence-transformers + BAAI/bge-small-zh-v1.5，离线) 和 `ModelScopeEmbedding` (API，Qwen3-Embedding-8B)；由 `EMBEDDING_MODE` 控制 |
 | Reranker | `src/rag/reranker.py` | `ModelScopeReranker` 封装 ModelScope Rerank API；失败时打印警告 + 降级为原始排序 |
@@ -133,15 +148,16 @@ USE_REASONING=true 时额外增加：
 |------|------|
 | `src/main.jsx` | React 入口，挂载 App |
 | `src/App.jsx` | 根组件：header（状态指示灯）+ FilePanel 侧边栏 + ChatWindow 主区域 |
+| `src/App.css` | 全局样式 (551 行)：Design tokens (CSS 变量 — Slate 色系)、布局、所有组件样式、响应式断点、动画 |
 | `src/components/ChatWindow.jsx` | 对话主体：消息列表、SSE 流式渲染（含 analysis 事件处理）、建议问题、输入框 |
-| `src/components/MessageBubble.jsx` | 单条消息：用户/助手气泡、`marked` 库渲染 GFM、分析摘要折叠面板（琥珀色、流式时自动展开、完成后自动折叠）、来源引用卡片 |
+| `src/components/MessageBubble.jsx` | 单条消息：用户/助手气泡、`marked` 库渲染 GFM → `DOMPurify.sanitize()` 消毒、分析摘要折叠面板（琥珀色、流式时自动展开、完成后自动折叠）、来源引用卡片 |
 | `src/components/SourceCard.jsx` | 引用卡片：支持标准规范引用和用户文件引用两种样式 |
 | `src/components/FilePanel.jsx` | 文件管理侧边栏：可折叠、文件列表（含图标/大小/时间）、删除确认 |
 | `src/components/FileUploadZone.jsx` | 文件上传区：拖拽/点击上传、多状态（default/dragging/uploading/success/error）、客户端校验 |
-| `src/api/chat.js` | 对话 API：`sendMessage()` 非流式、`sendMessageStream()` SSE 流式（AsyncGenerator）、`healthCheck()` |
+| `src/api/chat.js` | 对话 API：`sendMessage()` 非流式、`sendMessageStream()` SSE 流式（AsyncGenerator，支持 AbortController 取消）、`healthCheck()` |
 | `src/api/files.js` | 文件 API：`uploadFile()`、`listFiles()`、`deleteFile()` |
 
-**数据流**: Vite 开发服务器 (port 3000) 代理 `/api/*` → FastAPI (port 8000)。前端使用 SSE (`text/event-stream`) 接收流式响应，事件类型：`analysis`（结构化分析摘要）、`token`（逐字文本）、`source`（引用来源）、`done`、`error`。
+**数据流**: Vite 开发服务器 (port 3000) 通过 `vite.config.js` 中 `proxy: { "/api": { target: "http://127.0.0.1:8000" } }` 代理到 FastAPI 后端。前端使用 SSE (`text/event-stream`) 接收流式响应，事件类型：`analysis`（结构化分析摘要）、`token`（逐字文本）、`source`（引用来源）、`done`、`error`。修改 `FRONTEND_PORT` 时需同步更新 CORS origins（`main.py`）和此 proxy target。
 
 ### 数据管道脚本
 
@@ -164,7 +180,7 @@ USE_REASONING=true 时额外增加：
 - **无数据库** — 知识库全部为 `.txt` 文件，标准向量索引 + 用户 FAISS 索引均持久化为文件 (`backend/storage/`)。无 PostgreSQL/Redis。
 - **无用户认证** — 无登录、无用户管理。API Key（DeepSeek/ModelScope）在服务启动时由 `validate_config()` 校验。
 - **单用户设计** — `routes.py` 中全局 `_index` 单例，`files.py` 中全局 `_user_index` 单例，无会话管理、无对话历史持久化。
-- **无测试** — 项目当前无 pytest/Vitest 测试文件。修改代码后需手动启动服务验证。
+- **无测试** — 项目当前无 pytest/Vitest 测试文件。`test_tools.py` 是 MCP 工具列表验证脚本（非自动化测试）。修改代码后需手动启动服务验证。
 - **索引懒加载** — 首次 API 调用时才构建/加载索引，非启动时加载。
 - **Reranker 降级 + 日志** — ModelScope Rerank API 失败时自动回退到原始检索排序，同时打印 `[WARN]` 日志提示检查 API Key 和网络。
 - **文件解析惰性导入** — `file_parser.py` 中各格式解析库（PyMuPDF、python-docx 等）在函数内部惰性导入，按需加载。
@@ -173,17 +189,60 @@ USE_REASONING=true 时额外增加：
 - **EMBEDDING_DIM 固定** — FAISS 向量维度硬编码为 512，必须与 Embedding 模型输出维度一致。更换 Embedding 模型时需同步修改此值。
 - **config.py 导入即创建目录** — `INDEX_STORAGE_DIR`、`DOCUMENTS_DIR`、`USER_UPLOADS_DIR`、`USER_FAISS_DIR` 在模块导入时自动 `mkdir()`。任何导入 config 的脚本都会触发此副作用。
 - **用户文件仅在 USE_REASONING 模式生效** — 标准流式模式 (`USE_REASONING=false`) 不检索用户上传文件，仅检索标准知识库。
+- **MCP 服务器依赖未纳入 requirements.txt** — `mcp` (MCP SDK)、`tavily-python` (Tavily 客户端)、`beautifulsoup4` (百度搜索 HTML 解析) 未列入 `requirements.txt`，需手动安装：`pip install mcp tavily-python beautifulsoup4`
+
+## 关键实现细节（修改代码前必读）
+
+这些是实现中的非显而易见的约束，违反会导致隐蔽 bug：
+
+### FAISS 向量必须 L2 归一化
+
+`UserFAISSIndex` 使用 `IndexFlatIP`（内积），只有向量经过 L2 归一化后，内积才等价于余弦相似度。两处必须归一化：
+- **构建索引时**：`user_index.py` 存储前对 chunk embedding 做 `l2_normalize`
+- **查询时**：`embedding.py` 的 `LocalEmbedding` 所有 encode 调用传入 `normalize_embeddings=True`
+
+如果忘记归一化，检索结果会严重偏离——内积同时受方向和模长影响，长文本天然得分更高。
+
+### LocalEmbedding 异步方法不能阻塞事件循环
+
+`sentence-transformers` 的 `encode()` 是同步 CPU 密集型调用。在 async def 中直接调用会阻塞整个事件循环。`embedding.py` 中的 `_aget_*` 方法必须使用：
+```python
+loop = asyncio.get_running_loop()
+return await loop.run_in_executor(None, lambda: self._model.encode(...))
+```
+
+### 索引单例的双重检查锁定
+
+`routes.py` 的 `get_index()` 使用双重检查锁定模式（`if _index is not None` → `with _index_lock:` → `if _index is not None`），防止多个并发请求同时触发索引重建。修改索引加载逻辑时必须保持此模式，否则高并发下可能多次重建或出现竞态条件。
+
+### XSS 防护：Markdown 输出必须消毒
+
+`MessageBubble.jsx` 使用 `DOMPurify.sanitize()` 消毒 `marked` 库渲染的 HTML，防止 LLM 输出中的恶意脚本。修改前端渲染逻辑时不能跳过此步骤。`dompurify` 已在 `package.json` 中声明为依赖。
+
+### PDF 文件句柄必须释放
+
+`file_parser.py` 中 PyMuPDF (`fitz.open()`) 返回的 `Document` 对象必须在 `try/finally` 中显式调用 `.close()`，否则会导致文件句柄泄漏。长时间运行后可能耗尽文件描述符。
+
+### SSE 流支持取消
+
+前端 `chat.js` 的 `sendMessageStream()` 接受 `options.signal`（AbortController），用于取消正在进行的 SSE 流。修改流式请求逻辑时应保持此支持，否则用户切换页面后流仍占用后端连接。
+
+### 错误消息脱敏
+
+API 返回给客户端的错误消息不应包含内部路径、堆栈跟踪或敏感配置信息。`routes.py` 的 `event_generator()` 捕获异常后只返回 `str(e)`，需确保异常消息本身不含敏感信息。
 
 ## 主数据文件
 
 | 文件 | 用途 |
 |------|------|
-| `规范清单-200项.csv` | 200 项标准的主目录（标准编号、名称、分类、优先级 S/A/B/C、官方来源），是数据管线的唯一真源 |
+| `规范清单-200项.csv` | 200 项标准的主目录，数据管线的唯一真源。列：标准编号、名称、分类（国家标准GB/行业标准JGJ等）、优先级（S/A/B/C）、官方来源 URL、备注 |
 | `backend/scripts/sources.json` | 14 项标准的 URL 清单，供 `01_download.py` 使用 |
-| `项目详情.md` | 384 行项目全景文档：架构详解、数据流、逐文件说明、设计决策、环境变量（中文） |
+| `项目详情.docx` | 项目全景文档（Word 格式）：架构详解、数据流、逐文件说明、设计决策、环境变量（中文） |
 | `design-system/default/MASTER.md` | 前端设计系统规范：Slate `#475569` 色系、Inter 字体、密度 8/10、组件 CSS 规格 |
+| `design-system/tumu-zhushou/` | 项目专属设计系统目录（pages/ 子目录，当前为空） |
+| `README.md` | 用户向项目主页：特性介绍、快速开始、使用指南、架构概览 |
 
-**知识库覆盖状态**：`backend/src/data/documents/` 下共 231 个 `.txt` 文件。S 级标准 56 项中已收录 31 项（截至 2025-12），部分文件为占位符（仅含元数据，无全文）。数据管线 (`03_auto_crawler.py`) 正在持续扩充中。
+**知识库覆盖状态**：`backend/src/data/documents/` 下共 231 个 `.txt` 文件。S 级标准 56 项中已收录 31 项（截至 2025-12），部分文件为占位符（仅含元数据，无全文）。数据管线 (`03_auto_crawler.py`) 正在持续扩充中。**注意：以上数字为历史快照，实际文件数随数据管线运行持续增长，以 `backend/src/data/documents/` 目录实际内容为准。**
 
 ## 环境变量
 
@@ -197,6 +256,7 @@ USE_REASONING=true 时额外增加：
 | `DEEPSEEK_REASONING_MODEL` | `deepseek-reasoner` | 推理模型（已定义但当前未使用；`USE_REASONING=true` 仍用 `DEEPSEEK_MODEL`） |
 | `USE_REASONING` | `false` | 启用结构化 JSON 输出模式（含 analysis_summary）；不影响模型选择 |
 | `MODELSCOPE_API_KEY` | — | Embedding/Rerank API 密钥（local embedding 模式不需要） |
+| `TAVILY_API_KEY` | — | Tavily Search API 密钥（MCP 服务器 `tavily_search` 工具需要） |
 | `MODELSCOPE_BASE_URL` | `https://api.modelscope.cn` | ModelScope API 地址 |
 | `EMBEDDING_MODE` | `local` | `"local"` 离线或 `"api"` 云端 embedding |
 | `LOCAL_EMBEDDING_MODEL` | `BAAI/bge-small-zh-v1.5` | 本地 embedding 模型名 |
