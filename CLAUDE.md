@@ -63,6 +63,14 @@ cd backend && python -m src.mcp_server.server
 cd backend && python test_tools.py
 ```
 
+### CrewAI Agent
+
+```bash
+# 运行 CrewAI agent 测试（土木工程专家 + MCP 百度搜索工具）
+# 注意：test_crew.py 使用相对导入 (from crew.agents import ...)，需从 src/ 目录直接运行
+cd backend/src && python test_crew.py
+```
+
 ## 架构
 
 ### 整体数据流
@@ -101,6 +109,26 @@ USE_REASONING=true 时额外增加：
 
 启用方式：`.env` 中设置 `USE_REASONING=true`。
 
+### CrewAI Agent 管线（独立于 RAG 管线）
+
+CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，当前处于开发阶段（通过 `test_crew.py` 手动运行，尚未集成到 API 路由）：
+
+```
+用户问题 → test_crew.py
+  → src/llm/model.py: get_llm() → DeepSeek LLM (crewai.LLM)
+  → src/tools/mcp_tools.py: MCPBaiduSearchTool → MCP stdio 子进程 → baidu_search
+  → src/crew/agents.py: create_engineer_agent(llm, tools) → CrewAI Agent
+  → src/crew/tasks.py: create_engineering_task(agent, question) → CrewAI Task
+  → src/crew/crew.py: run_crew(agent, task) → crew.kickoff() → 结构化工程分析报告
+```
+
+**关键实现细节**：
+- `MCPBaiduSearchTool._run()` 内部使用 `asyncio.run()` 桥接 CrewAI 的同步调用与 MCP 的异步协议——每次工具调用都会启动一个新的 MCP stdio 子进程（短生命周期）。
+- `src/agent/agent.py` 和 `src/crew/agents.py` 是两个**独立的 Agent 工厂**：前者是早期原型（直接使用 `crewai.Agent` + 内联 goal/backstory），后者是当前版本（通过 `create_engineer_agent()` 封装，被 `test_crew.py` 使用）。
+- `src/agent/mcp_client.py` 是独立的 MCP 客户端演示脚本（非模块），用于手动验证 MCP 连接和工具列表。
+- `src/crew/`、`src/llm/`、`src/tools/` 三个目录**缺少 `__init__.py`**，当前依赖 Python 3.3+ 隐式命名空间包机制工作。若迁移到严格包管理模式或添加 linter 规则，需补上 `__init__.py`。
+- `src/rag/llm.py::get_llm()`（LlamaIndex OpenAILike）与 `src/llm/model.py::get_llm()`（CrewAI LLM）**同名不同实现**，修改时注意区分。
+
 ### 用户文件管理
 
 用户可上传文档（PDF/Word/PPT/Excel/TXT/Markdown），系统解析后存入独立的 FAISS 向量索引。问答时同时检索标准知识库和用户文件，用户文件内容在 context 中优先排列。
@@ -118,12 +146,19 @@ USE_REASONING=true 时额外增加：
 | API 路由 | `src/api/routes.py` | `GET /api/health`、`POST /api/chat`、`POST /api/chat/stream`；索引懒加载；`USE_REASONING` 分支选择结构化 JSON 或标准流式模式 |
 | API Schema | `src/api/schemas.py` | Pydantic 请求/响应模型（含用户文件相关 schema） |
 | 文件 API | `src/api/files.py` | `POST /api/files/upload`、`GET /api/files`、`GET /api/files/{id}`、`DELETE /api/files/{id}`、`POST /api/files/search` |
-| MCP 服务器 | `src/mcp_server/server.py` | MCP (Model Context Protocol) 服务器，注册 `baidu_search` 和 `tavily_search` 两个工具，通过 stdio 与 MCP 客户端（如 Claude Code）通信 |
+| MCP 服务器 | `src/mcp_server/server.py` | MCP (Model Context Protocol) 服务器，基于 **FastMCP** 框架。通过 `@mcp.tool()` 装饰器注册 `baidu_search` 和 `tavily_search` 工具，stdio 模式运行，供 MCP 客户端（Claude Code 或 CrewAI agent）调用 |
 | MCP 工具 | `src/mcp_server/baidu_tool.py` | `search_baidu()` 包装，供 MCP 服务器调用 |
 | MCP 工具 | `src/mcp_server/tavily_tool.py` | Tavily Search API 封装，调用 `TavilyClient` 返回搜索结果 |
 | 百度搜索 | `src/mcp_server/baidu_tools.py` | 百度网页搜索爬虫：HTML 解析（BeautifulSoup + 自定义 HTMLParser 双解析器）、重定向跟踪、分页、反爬处理 |
 | 共享模块 | `src/shared/` | `common.py`（SearchResult/Evidence 数据类）、`config.py`（百度搜索参数）、`crawler.py`（Article 抓取器，当前为占位实现） |
-| LLM | `src/rag/llm.py` | `get_llm()` 工厂函数，通过 OpenAI 兼容接口 (`OpenAILike`) 接入 DeepSeek-Chat，默认 max_tokens=2048。支持可选参数 `model`、`temperature`、`max_tokens`。**注意**：结构化 JSON 模式 (`USE_REASONING=true`) 不经过此模块，而是直接用 `httpx` 请求 DeepSeek API，max_tokens=4096 |
+| **CrewAI Agent** | `src/agent/agent.py` | CrewAI Agent 工厂：创建土木工程专家 agent，绑定工具和 LLM |
+| **CrewAI MCP 客户端** | `src/agent/mcp_client.py` | 异步 MCP 客户端：通过 stdio 连接 MCP 服务器，列出工具 + 调用示例。独立运行脚本，非模块导入 |
+| **CrewAI Crew** | `src/crew/agents.py` | 工程师 agent 定义（role/goal/backstory/tools/llm） |
+| **CrewAI Tasks** | `src/crew/tasks.py` | 工程问题分析任务模板：结构化输出要求（原因→方案→专业语言） |
+| **CrewAI Runner** | `src/crew/crew.py` | Crew 编排器：组装 agent + task 并 `kickoff()` |
+| **CrewAI LLM** | `src/llm/model.py` | DeepSeek LLM 工厂（供 CrewAI 使用，通过 `crewai.LLM` 包装），读取 `DEEPSEEK_API_KEY` |
+| **CrewAI MCP 工具** | `src/tools/mcp_tools.py` | `MCPBaiduSearchTool` — CrewAI `BaseTool` 子类，每次调用启动 MCP stdio 子进程执行百度搜索。`_run()` 内部调用 `asyncio.run()` 桥接同步/异步 |
+| LLM (RAG) | `src/rag/llm.py` | `get_llm()` 工厂函数，通过 OpenAI 兼容接口 (`OpenAILike`) 接入 DeepSeek-Chat，默认 max_tokens=2048。支持可选参数 `model`、`temperature`、`max_tokens`。**注意**：此模块供 LlamaIndex RAG 使用；CrewAI 使用独立的 `src/llm/model.py`；结构化 JSON 模式 (`USE_REASONING=true`) 不经过此模块，而是直接用 `httpx` 请求 DeepSeek API，max_tokens=4096 |
 | Embedding | `src/rag/embedding.py` | 双模式：`LocalEmbedding` (sentence-transformers + BAAI/bge-small-zh-v1.5，离线) 和 `ModelScopeEmbedding` (API，Qwen3-Embedding-8B)；由 `EMBEDDING_MODE` 控制 |
 | Reranker | `src/rag/reranker.py` | `ModelScopeReranker` 封装 ModelScope Rerank API；失败时打印警告 + 降级为原始排序 |
 | 索引 | `src/rag/indexing.py` | 文档加载、SentenceSplitter 中文切分、IngestionPipeline 处理、索引构建与持久化 |
@@ -189,7 +224,7 @@ USE_REASONING=true 时额外增加：
 - **EMBEDDING_DIM 固定** — FAISS 向量维度硬编码为 512，必须与 Embedding 模型输出维度一致。更换 Embedding 模型时需同步修改此值。
 - **config.py 导入即创建目录** — `INDEX_STORAGE_DIR`、`DOCUMENTS_DIR`、`USER_UPLOADS_DIR`、`USER_FAISS_DIR` 在模块导入时自动 `mkdir()`。任何导入 config 的脚本都会触发此副作用。
 - **用户文件仅在 USE_REASONING 模式生效** — 标准流式模式 (`USE_REASONING=false`) 不检索用户上传文件，仅检索标准知识库。
-- **MCP 服务器依赖未纳入 requirements.txt** — `mcp` (MCP SDK)、`tavily-python` (Tavily 客户端)、`beautifulsoup4` (百度搜索 HTML 解析) 未列入 `requirements.txt`，需手动安装：`pip install mcp tavily-python beautifulsoup4`
+- **MCP/CrewAI 依赖未纳入 requirements.txt** — 以下依赖均未列入 `requirements.txt`，需手动安装：`mcp` (MCP SDK)、`fastmcp` (MCP 服务器框架)、`tavily-python` (Tavily 客户端)、`beautifulsoup4` (百度搜索 HTML 解析)、`crewai` (CrewAI agent 框架)。一次性安装：`pip install mcp fastmcp tavily-python beautifulsoup4 crewai`
 
 ## 关键实现细节（修改代码前必读）
 

@@ -15,33 +15,22 @@ from src.config import (
     INDEX_STORAGE_DIR, DEEPSEEK_MODEL, EMBEDDING_MODEL, RERANK_MODEL,
     USE_REASONING,
 )
-from src.rag.indexing import build_index
+from src.rag.index_singleton import get_index
 from src.rag.query import query_with_sources, get_streaming_query_engine, astream_query_structured
 from src.api.files import get_user_index
 
 router = APIRouter()
 
-# 全局索引实例（懒加载，线程安全）
-_index: VectorStoreIndex | None = None
-_index_lock = threading.Lock()
 
-
-def get_index() -> VectorStoreIndex:
-    """获取或初始化向量索引（懒加载，双重检查锁定）"""
-    global _index
-    if _index is not None:
-        return _index
-    with _index_lock:
-        if _index is not None:
-            return _index
-        try:
-            _index = build_index()
-        except ValueError as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"知识库索引未就绪: {e}。请先将规范文档放入 documents/ 目录。"
-            )
-        return _index
+def _get_index_or_raise() -> VectorStoreIndex:
+    """获取索引，若未就绪则抛出 HTTP 503"""
+    try:
+        return get_index()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"知识库索引未就绪: {e}。请先将规范文档放入 documents/ 目录。"
+        )
 
 
 @router.get("/api/health", response_model=HealthResponse)
@@ -67,7 +56,7 @@ async def health_check():
 async def chat(request: ChatRequest):
     """RAG 对话接口 — 检索增强生成（非流式）"""
     try:
-        index = get_index()
+        index = _get_index_or_raise()
     except HTTPException:
         raise
 
@@ -92,7 +81,7 @@ async def chat_stream(request: ChatRequest):
       data: {"type":"error","message":"..."}                 # 出错
     """
     try:
-        index = get_index()
+        index = _get_index_or_raise()
     except HTTPException:
         raise
 

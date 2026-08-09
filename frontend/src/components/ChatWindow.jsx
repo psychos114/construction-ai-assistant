@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { sendMessageStream } from "../api/chat";
+import { sendMessageStream, sendAgentMessageStream } from "../api/chat";
 import MessageBubble from "./MessageBubble";
 
 const SUGGESTED = [
@@ -13,6 +13,7 @@ function ChatWindow() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [mode, setMode] = useState("rag"); // "rag" | "agent"
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(null);
@@ -42,7 +43,9 @@ function ChatWindow() {
       // 创建 AbortController 以支持取消请求
       const controller = new AbortController();
       abortRef.current = controller;
-      const stream = sendMessageStream(question, { signal: controller.signal });
+      const stream = mode === "agent"
+        ? sendAgentMessageStream(question, { signal: controller.signal })
+        : sendMessageStream(question, { signal: controller.signal });
 
       for await (const event of stream) {
         setMessages((prev) => {
@@ -62,6 +65,9 @@ function ChatWindow() {
             updates = { streaming: false };
           } else if (event.type === "error") {
             updates = { content: `抱歉，查询出错：${event.message}`, streaming: false };
+          } else if (event.type === "tool_call") {
+            // Agent 调用了工具 — 在 sources 中展示工具使用记录
+            updates = { sources: [...last.sources, { source_type: "tool", tool_name: event.tool, content: event.content }] };
           } else {
             return prev;
           }
@@ -90,7 +96,7 @@ function ChatWindow() {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [input, loading]);
+  }, [input, loading, mode]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -138,6 +144,22 @@ function ChatWindow() {
       </div>
 
       <div className="chat-input-area">
+        <div className="mode-toggle">
+          <button
+            className={`mode-btn ${mode === "rag" ? "active" : ""}`}
+            onClick={() => setMode("rag")}
+            disabled={loading}
+          >
+            规范知识库
+          </button>
+          <button
+            className={`mode-btn ${mode === "agent" ? "active" : ""}`}
+            onClick={() => setMode("agent")}
+            disabled={loading}
+          >
+            Agent 智能搜索
+          </button>
+        </div>
         <div className="chat-input-row">
           <textarea
             ref={textareaRef}

@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routes import router
 from src.api.files import router as files_router
+from src.api.agent_routes import agent_router
 from src.config import BACKEND_PORT, APP_ENV, validate_config
 
 app = FastAPI(
@@ -34,6 +35,7 @@ app.add_middleware(
 # 挂载路由
 app.include_router(router)
 app.include_router(files_router)
+app.include_router(agent_router)
 
 # 启动时检查
 @app.on_event("startup")
@@ -45,8 +47,8 @@ async def startup():
         print("请检查 .env 文件中的 API Key 配置。")
         import sys
         sys.exit(1)
-    print(f"🚀 土木工程智能助手 API 启动 (端口 {BACKEND_PORT})")
-    print(f"📄 API 文档: http://localhost:{BACKEND_PORT}/docs")
+    print(f"[OK] Civil Engineering AI Assistant API started (port {BACKEND_PORT})")
+    print(f"[OK] API docs: http://localhost:{BACKEND_PORT}/docs")
 
 
 def main():
