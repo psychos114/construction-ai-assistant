@@ -10,7 +10,9 @@ from crew.crew import run_crew
 
 from llm.model import get_llm
 
-from tools.mcp_tools import import (
+from tools.rag_tool import RAGKnowledgeBaseTool
+
+from tools.mcp_tools import (
     MCPBaiduSearchTool,
     MCPTavilySearchTool
 )
@@ -22,6 +24,7 @@ def main():
 
 
     tools = [
+        RAGKnowledgeBaseTool(),
         MCPBaiduSearchTool(),
         MCPTavilySearchTool()
     ]

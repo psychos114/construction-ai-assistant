@@ -29,8 +29,10 @@ function MessageBubble({ message }) {
   const isStreaming = message.streaming === true;
   const hasSources = !isUser && message.sources && message.sources.length > 0;
   const hasAnalysis = !isUser && message.analysis;
+  const hasReasoning = !isUser && message.reasoning;
 
   const [analysisExpanded, setAnalysisExpanded] = useState(false);
+  const [reasoningExpanded, setReasoningExpanded] = useState(false);
 
   // 分析摘要到达时自动展开；流式完成后自动折叠
   useEffect(() => {
@@ -40,6 +42,15 @@ function MessageBubble({ message }) {
       setAnalysisExpanded(false);
     }
   }, [hasAnalysis, isStreaming]);
+
+  // 思考过程：流式时展开，完成后折叠
+  useEffect(() => {
+    if (hasReasoning && isStreaming) {
+      setReasoningExpanded(true);
+    } else if (hasReasoning && !isStreaming) {
+      setReasoningExpanded(false);
+    }
+  }, [hasReasoning, isStreaming]);
 
   // 缓存 Markdown 解析：仅在回答内容变化时重新解析（经过 DOMPurify 消毒）
   const contentHtml = useMemo(() => {
@@ -52,6 +63,39 @@ function MessageBubble({ message }) {
         {isUser ? "您" : isStreaming ? "回答中..." : "助手"}
       </div>
       <div className="message-body">
+        {/* ===== 思考过程（流式推理链）===== */}
+        {hasReasoning && (
+          <div className={`thinking-section${isStreaming ? " thinking-active" : ""}`}>
+            <button
+              className="thinking-header"
+              onClick={() => setReasoningExpanded(!reasoningExpanded)}
+              aria-expanded={reasoningExpanded}
+            >
+              <span className="thinking-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2z"/>
+                  <path d="M12 6v4l2.5 2.5"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <circle cx="15.5" cy="8.5" r="1.5"/>
+                </svg>
+              </span>
+              <span className="thinking-label">
+                {isStreaming ? "思考中…" : "思考过程"}
+              </span>
+              <span className={`thinking-toggle${reasoningExpanded ? " expanded" : ""}`}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </span>
+            </button>
+            {reasoningExpanded && (
+              <div className="thinking-content reasoning-content">
+                <p className="analysis-field-text">{message.reasoning}</p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ===== 分析摘要区域（纯文本，不走 Markdown 解析）===== */}
         {hasAnalysis && (
           <div className={`thinking-section${isStreaming ? " thinking-active" : ""}`}>

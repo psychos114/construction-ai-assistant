@@ -66,7 +66,7 @@ USER_FAISS_DIR: Path = ROOT_DIR / "backend" / "storage" / "user_faiss"
 # 用户文件索引检索数量
 USER_TOP_K: int = 5
 # FAISS 向量维度（必须与 Embedding 模型输出匹配：BAAI/bge-small-zh-v1.5 = 512）
-EMBEDDING_DIM: int = 512
+EMBEDDING_DIM: int = 512  # BAAI/bge-small-zh-v1.5 输出 512 维
 # 支持的文档格式
 ALLOWED_EXTENSIONS: set = {".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md"}
 # 最大文件大小 (50MB)

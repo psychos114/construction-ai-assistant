@@ -20,24 +20,74 @@ from src.rag.embedding import get_embedding
 
 
 def load_documents(docs_dir: Path | None = None):
-    """加载文档目录中的文本文件"""
-    from llama_index.core import SimpleDirectoryReader
+    """加载文档目录中的所有支持格式文件"""
+
+    from src.rag.file_parser import parse_file
+    from llama_index.core import Document
 
     source_dir = docs_dir or DOCUMENTS_DIR
 
     if not source_dir.exists():
         source_dir.mkdir(parents=True, exist_ok=True)
-        print(f"文档目录 {source_dir} 为空，请放入 .txt/.pdf 文件后重新运行。")
+        print(f"文档目录 {source_dir} 为空，请放入文档后重新运行。")
         return []
 
-    reader = SimpleDirectoryReader(
-        input_dir=str(source_dir),
-        recursive=True,
-        required_exts=[".txt", ".pdf", ".md"],
-    )
-    documents = reader.load_data()
+
+    documents = []
+
+    # 递归扫描所有文件
+    for file_path in source_dir.rglob("*"):
+
+        # 跳过文件夹
+        if not file_path.is_file():
+            continue
+
+
+        # 支持格式
+        suffix = file_path.suffix.lower()
+
+        if suffix not in [
+            ".txt",
+            ".pdf",
+            ".md",
+            ".docx",
+            ".pptx",
+            ".xlsx",
+        ]:
+            continue
+
+
+        try:
+            print(f"正在解析: {file_path.name}")
+
+
+            text = parse_file(file_path, suffix)
+
+
+            doc = Document(
+                text=text,
+                metadata={
+                    "file_name": file_path.name,
+                    "file_type": suffix,
+                    "file_path": str(file_path),
+                }
+            )
+
+
+            documents.append(doc)
+
+
+        except Exception as e:
+            print(
+                f"解析失败: {file_path.name}, 原因:{e}"
+            )
+
+
     print(f"已加载 {len(documents)} 个文档")
+
     return documents
+
+
 
 
 def build_index(

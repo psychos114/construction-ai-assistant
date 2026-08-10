@@ -1,5 +1,5 @@
 """
-Agent API 路由 — CrewAI Agent + RAG 知识库 + MCP 搜索 → SSE 流式输出
+Agent API 路由 — CrewAI Agent + RAG 知识库 + MCP 搜索 → JSON格式回答
 """
 import json
 import asyncio
@@ -52,11 +52,93 @@ async def chat_agent(request: ChatRequest):
     )
 
 
-    result = await asyncio.to_thread(
-        crew.kickoff
+    async def event_generator():
+
+        try:
+
+            result = await asyncio.to_thread(
+                crew.kickoff
+            )
+
+
+            answer = str(result)
+
+
+            # 模拟token流
+            buffer = ""
+
+            for char in answer:
+
+                buffer += char
+
+
+                if len(buffer) >= 3:
+
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type":"token",
+                                "content":buffer
+                            },
+                            ensure_ascii=False
+                        )
+                        + "\n\n"
+                    )
+
+                    buffer=""
+
+                    await asyncio.sleep(0.01)
+
+
+            if buffer:
+
+                yield (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type":"token",
+                            "content":buffer
+                        },
+                        ensure_ascii=False
+                    )
+                    + "\n\n"
+                )
+
+
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type":"done"
+                    }
+                )
+                + "\n\n"
+            )
+
+
+        except Exception as e:
+
+    
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type":"error",
+                        "message":str(e)
+                    },
+                    ensure_ascii=False
+                )
+                + "\n\n"
+            )
+
+
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":"no-cache",
+            "Connection":"keep-alive",
+        }
     )
-
-
-    return {
-        "answer": str(result)
-    }

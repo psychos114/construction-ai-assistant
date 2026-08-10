@@ -66,9 +66,14 @@ cd backend && python test_tools.py
 ### CrewAI Agent
 
 ```bash
-# 运行 CrewAI agent 测试（土木工程专家 + MCP 百度搜索工具）
+# 运行 CrewAI agent 测试（土木工程专家 + RAG 知识库 + MCP 百度/Tavily 搜索三工具）
 # 注意：test_crew.py 使用相对导入 (from crew.agents import ...)，需从 src/ 目录直接运行
 cd backend/src && python test_crew.py
+
+# 通过 API 调用 Agent（启动后端后）
+curl -X POST http://localhost:8000/api/chat/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question": "混凝土裂缝产生的主要原因是什么？"}'
 ```
 
 ## 架构
@@ -86,6 +91,16 @@ USE_REASONING=true 时额外增加：
 ```
 
 **重要**：用户文件 FAISS 检索**仅在 `USE_REASONING=true` 模式**下生效。标准模式（`USE_REASONING=false`）只检索标准知识库。
+
+### 三条用户交互路径
+
+系统提供三条独立的用户交互路径：
+
+| 路径 | 端点 | 模式 | 说明 |
+|------|------|------|------|
+| **RAG 流式** | `POST /api/chat/stream` | SSE 流式 | 标准 LlamaIndex 查询引擎，逐 token 流式输出；`USE_REASONING=true` 时切换为结构化 JSON 模式 |
+| **RAG 非流式** | `POST /api/chat` | JSON 响应 | 非流式便捷接口 |
+| **CrewAI Agent** | `POST /api/chat/agent` | JSON 响应（同步） | CrewAI Agent 管线：RAG 知识库 + 百度搜索 + Tavily 搜索三工具协作，`asyncio.to_thread()` 包装同步 `crew.kickoff()` |
 
 ### 结构化输出模式（USE_REASONING=true）
 
@@ -109,24 +124,36 @@ USE_REASONING=true 时额外增加：
 
 启用方式：`.env` 中设置 `USE_REASONING=true`。
 
+### 索引单例架构（`src/rag/index_singleton.py`）
+
+向量索引通过 `index_singleton.py` 管理，使用双重检查锁定（`threading.Lock`）保证线程安全。该单例被**两条路径共享**：
+
+1. **RAG API 路由** (`routes.py`)：构建查询引擎，进行流式/非流式问答
+2. **CrewAI RAG 工具** (`tools/rag_tool.py`)：将 LlamaIndex 检索封装为 `RAGKnowledgeBaseTool`，供 Agent 调用
+
+修改索引加载逻辑时必须保持双重检查锁定模式，否则高并发下可能多次重建或出现竞态条件。`reset_index()` 仅用于测试。
+
 ### CrewAI Agent 管线（独立于 RAG 管线）
 
-CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，当前处于开发阶段（通过 `test_crew.py` 手动运行，尚未集成到 API 路由）：
+CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成到 API 路由中（`POST /api/chat/agent`）：
 
 ```
-用户问题 → test_crew.py
+用户问题 → agent_routes.py (asyncio.to_thread)
   → src/llm/model.py: get_llm() → DeepSeek LLM (crewai.LLM)
-  → src/tools/mcp_tools.py: MCPBaiduSearchTool → MCP stdio 子进程 → baidu_search
+  → 三工具并行可用:
+     ├─ src/tools/rag_tool.py: RAGKnowledgeBaseTool → index_singleton → LlamaIndex 检索
+     ├─ src/tools/mcp_tools.py: MCPBaiduSearchTool → MCP stdio 子进程 → baidu_search
+     └─ src/tools/mcp_tools.py: MCPTavilySearchTool → MCP stdio 子进程 → tavily_search
   → src/crew/agents.py: create_engineer_agent(llm, tools) → CrewAI Agent
   → src/crew/tasks.py: create_engineering_task(agent, question) → CrewAI Task
-  → src/crew/crew.py: run_crew(agent, task) → crew.kickoff() → 结构化工程分析报告
+  → crew.kickoff() → 结构化工程分析报告
 ```
 
 **关键实现细节**：
-- `MCPBaiduSearchTool._run()` 内部使用 `asyncio.run()` 桥接 CrewAI 的同步调用与 MCP 的异步协议——每次工具调用都会启动一个新的 MCP stdio 子进程（短生命周期）。
-- `src/agent/agent.py` 和 `src/crew/agents.py` 是两个**独立的 Agent 工厂**：前者是早期原型（直接使用 `crewai.Agent` + 内联 goal/backstory），后者是当前版本（通过 `create_engineer_agent()` 封装，被 `test_crew.py` 使用）。
+- `MCPBaiduSearchTool._run()` 和 `MCPTavilySearchTool._run()` 内部使用 `asyncio.run()` 桥接 CrewAI 的同步调用与 MCP 的异步协议——每次工具调用都会启动一个新的 MCP stdio 子进程（短生命周期），并设置 `PYTHONPATH` 和 `PYTHONIOENCODING=utf-8` 环境变量。
+- `RAGKnowledgeBaseTool._run()` 是同步方法，直接调用 `index_singleton.get_index()` 获取共享索引实例，然后通过 `query_with_sources()` 检索知识库。Agent 可根据问题类型自主决定使用知识库检索、百度搜索还是 Tavily 搜索。
+- `src/agent/agent.py` 和 `src/crew/agents.py` 是两个**独立的 Agent 工厂**：前者是早期原型（`create_agents()` 直接使用 `crewai.Agent` + 内联 goal/backstory），后者是当前版本（`create_engineer_agent()` 封装，被 `test_crew.py` 和 `agent_routes.py` 使用）。
 - `src/agent/mcp_client.py` 是独立的 MCP 客户端演示脚本（非模块），用于手动验证 MCP 连接和工具列表。
-- `src/crew/`、`src/llm/`、`src/tools/` 三个目录**缺少 `__init__.py`**，当前依赖 Python 3.3+ 隐式命名空间包机制工作。若迁移到严格包管理模式或添加 linter 规则，需补上 `__init__.py`。
 - `src/rag/llm.py::get_llm()`（LlamaIndex OpenAILike）与 `src/llm/model.py::get_llm()`（CrewAI LLM）**同名不同实现**，修改时注意区分。
 
 ### 用户文件管理
@@ -141,23 +168,26 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，当前处�
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 入口 | `src/main.py` | FastAPI 应用，CORS 配置（硬编码 `localhost:3000` / `127.0.0.1:3000`），启动时 `validate_config()` 校验 API Key；`APP_ENV=development` 时启用 `/docs` |
+| 入口 | `src/main.py` | FastAPI 应用，CORS 配置（硬编码 `localhost:3000` / `127.0.0.1:3000`），挂载三个路由模块（`router`、`files_router`、`agent_router`），启动时 `validate_config()` 校验 API Key；`APP_ENV=development` 时启用 `/docs` |
 | 配置 | `src/config.py` | 所有环境变量和 RAG 参数，从项目根目录 `.env` 读取；含 `validate_config()` 校验必填 API Key |
-| API 路由 | `src/api/routes.py` | `GET /api/health`、`POST /api/chat`、`POST /api/chat/stream`；索引懒加载；`USE_REASONING` 分支选择结构化 JSON 或标准流式模式 |
+| API 路由 | `src/api/routes.py` | `GET /api/health`、`POST /api/chat`、`POST /api/chat/stream`；通过 `index_singleton.get_index()` 获取索引；`USE_REASONING` 分支选择结构化 JSON 或标准流式模式 |
 | API Schema | `src/api/schemas.py` | Pydantic 请求/响应模型（含用户文件相关 schema） |
+| Agent API | `src/api/agent_routes.py` | `POST /api/chat/agent` — CrewAI Agent 端点：组装三工具（RAG + Baidu + Tavily）+ Engineer Agent + Task → `asyncio.to_thread(crew.kickoff)` → JSON 响应 |
 | 文件 API | `src/api/files.py` | `POST /api/files/upload`、`GET /api/files`、`GET /api/files/{id}`、`DELETE /api/files/{id}`、`POST /api/files/search` |
 | MCP 服务器 | `src/mcp_server/server.py` | MCP (Model Context Protocol) 服务器，基于 **FastMCP** 框架。通过 `@mcp.tool()` 装饰器注册 `baidu_search` 和 `tavily_search` 工具，stdio 模式运行，供 MCP 客户端（Claude Code 或 CrewAI agent）调用 |
 | MCP 工具 | `src/mcp_server/baidu_tool.py` | `search_baidu()` 包装，供 MCP 服务器调用 |
 | MCP 工具 | `src/mcp_server/tavily_tool.py` | Tavily Search API 封装，调用 `TavilyClient` 返回搜索结果 |
 | 百度搜索 | `src/mcp_server/baidu_tools.py` | 百度网页搜索爬虫：HTML 解析（BeautifulSoup + 自定义 HTMLParser 双解析器）、重定向跟踪、分页、反爬处理 |
 | 共享模块 | `src/shared/` | `common.py`（SearchResult/Evidence 数据类）、`config.py`（百度搜索参数）、`crawler.py`（Article 抓取器，当前为占位实现） |
-| **CrewAI Agent** | `src/agent/agent.py` | CrewAI Agent 工厂：创建土木工程专家 agent，绑定工具和 LLM |
+| **索引单例** | `src/rag/index_singleton.py` | 共享索引单例：双重检查锁定 + `get_index()` / `reset_index()`。被 RAG API 和 CrewAI RAG 工具共用 |
+| **CrewAI Agent** | `src/agent/agent.py` | 早期 Agent 工厂原型（`create_agents()`），当前**未被使用**，保留作参考 |
 | **CrewAI MCP 客户端** | `src/agent/mcp_client.py` | 异步 MCP 客户端：通过 stdio 连接 MCP 服务器，列出工具 + 调用示例。独立运行脚本，非模块导入 |
-| **CrewAI Crew** | `src/crew/agents.py` | 工程师 agent 定义（role/goal/backstory/tools/llm） |
-| **CrewAI Tasks** | `src/crew/tasks.py` | 工程问题分析任务模板：结构化输出要求（原因→方案→专业语言） |
-| **CrewAI Runner** | `src/crew/crew.py` | Crew 编排器：组装 agent + task 并 `kickoff()` |
-| **CrewAI LLM** | `src/llm/model.py` | DeepSeek LLM 工厂（供 CrewAI 使用，通过 `crewai.LLM` 包装），读取 `DEEPSEEK_API_KEY` |
-| **CrewAI MCP 工具** | `src/tools/mcp_tools.py` | `MCPBaiduSearchTool` — CrewAI `BaseTool` 子类，每次调用启动 MCP stdio 子进程执行百度搜索。`_run()` 内部调用 `asyncio.run()` 桥接同步/异步 |
+| **CrewAI Crew** | `src/crew/agents.py` | 工程师 agent 定义（`create_engineer_agent(llm, tools)`：role/goal/backstory/tools/llm） |
+| **CrewAI Tasks** | `src/crew/tasks.py` | 工程问题分析任务模板（`create_engineering_task(agent, question)`）：结构化输出要求（原因→方案→专业语言） |
+| **CrewAI Runner** | `src/crew/crew.py` | Crew 编排器（`run_crew(agent, task)`）：组装 agent + task 并 `kickoff()` |
+| **CrewAI LLM** | `src/llm/model.py` | DeepSeek LLM 工厂（供 CrewAI 使用，通过 `crewai.LLM` 包装），读取 `DEEPSEEK_API_KEY`，硬编码 `deepseek-chat` 模型 |
+| **CrewAI MCP 工具** | `src/tools/mcp_tools.py` | `MCPBaiduSearchTool` + `MCPTavilySearchTool` — CrewAI `BaseTool` 子类，每次调用启动 MCP stdio 子进程执行搜索。`_run()` 内部调用 `asyncio.run()` 桥接同步/异步 |
+| **CrewAI RAG 工具** | `src/tools/rag_tool.py` | `RAGKnowledgeBaseTool` — CrewAI `BaseTool` 子类，将 LlamaIndex 知识库检索封装为 Agent 工具。通过 `index_singleton.get_index()` 获取共享索引，调用 `query_with_sources()` 返回带来源引用的格式化结果 |
 | LLM (RAG) | `src/rag/llm.py` | `get_llm()` 工厂函数，通过 OpenAI 兼容接口 (`OpenAILike`) 接入 DeepSeek-Chat，默认 max_tokens=2048。支持可选参数 `model`、`temperature`、`max_tokens`。**注意**：此模块供 LlamaIndex RAG 使用；CrewAI 使用独立的 `src/llm/model.py`；结构化 JSON 模式 (`USE_REASONING=true`) 不经过此模块，而是直接用 `httpx` 请求 DeepSeek API，max_tokens=4096 |
 | Embedding | `src/rag/embedding.py` | 双模式：`LocalEmbedding` (sentence-transformers + BAAI/bge-small-zh-v1.5，离线) 和 `ModelScopeEmbedding` (API，Qwen3-Embedding-8B)；由 `EMBEDDING_MODE` 控制 |
 | Reranker | `src/rag/reranker.py` | `ModelScopeReranker` 封装 ModelScope Rerank API；失败时打印警告 + 降级为原始排序 |
@@ -183,7 +213,7 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，当前处�
 |------|------|
 | `src/main.jsx` | React 入口，挂载 App |
 | `src/App.jsx` | 根组件：header（状态指示灯）+ FilePanel 侧边栏 + ChatWindow 主区域 |
-| `src/App.css` | 全局样式 (551 行)：Design tokens (CSS 变量 — Slate 色系)、布局、所有组件样式、响应式断点、动画 |
+| `src/App.css` | 全局样式 (~1078 行)：Design tokens (CSS 变量 — Slate 色系)、布局、所有组件样式、响应式断点、动画 |
 | `src/components/ChatWindow.jsx` | 对话主体：消息列表、SSE 流式渲染（含 analysis 事件处理）、建议问题、输入框 |
 | `src/components/MessageBubble.jsx` | 单条消息：用户/助手气泡、`marked` 库渲染 GFM → `DOMPurify.sanitize()` 消毒、分析摘要折叠面板（琥珀色、流式时自动展开、完成后自动折叠）、来源引用卡片 |
 | `src/components/SourceCard.jsx` | 引用卡片：支持标准规范引用和用户文件引用两种样式 |
@@ -205,8 +235,9 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，当前处�
 
 **知识库文档组织**: `backend/src/data/documents/` 下按分类存放：
 - `国家标准GB/结构设计/`, `施工验收/`, `安全规范/`, `材料标准/`, `检测与试验/`
-- `行业标准/JGJ建筑行业/`, `JTG交通行业/`, 等
-- `法律法规/`, `技术规程/`, `地方标准/`
+- `行业标准/JGJ建筑行业/`, `JTG交通行业/`
+- `法律法规/`, `技术规程/`
+- `地方标准/`（含 `上海DB/`、`北京DB/`、`广东DB/`、`江苏DB/`、`浙江DB/` 等）
 
 文档名格式: `{标准编号}_{名称}.txt`，文件头包含标准元数据注释。
 
@@ -214,9 +245,9 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，当前处�
 
 - **无数据库** — 知识库全部为 `.txt` 文件，标准向量索引 + 用户 FAISS 索引均持久化为文件 (`backend/storage/`)。无 PostgreSQL/Redis。
 - **无用户认证** — 无登录、无用户管理。API Key（DeepSeek/ModelScope）在服务启动时由 `validate_config()` 校验。
-- **单用户设计** — `routes.py` 中全局 `_index` 单例，`files.py` 中全局 `_user_index` 单例，无会话管理、无对话历史持久化。
+- **单用户设计** — 索引通过 `index_singleton.py` 全局单例管理，`files.py` 中全局 `_user_index` 单例，无会话管理、无对话历史持久化。
 - **无测试** — 项目当前无 pytest/Vitest 测试文件。`test_tools.py` 是 MCP 工具列表验证脚本（非自动化测试）。修改代码后需手动启动服务验证。
-- **索引懒加载** — 首次 API 调用时才构建/加载索引，非启动时加载。
+- **索引懒加载** — 首次 API 调用或 Agent 工具调用时才构建/加载索引，非启动时加载。
 - **Reranker 降级 + 日志** — ModelScope Rerank API 失败时自动回退到原始检索排序，同时打印 `[WARN]` 日志提示检查 API Key 和网络。
 - **文件解析惰性导入** — `file_parser.py` 中各格式解析库（PyMuPDF、python-docx 等）在函数内部惰性导入，按需加载。
 - **Swagger 条件启用** — `APP_ENV=development` 时启用 `/docs`，非开发环境隐藏。
@@ -248,7 +279,11 @@ return await loop.run_in_executor(None, lambda: self._model.encode(...))
 
 ### 索引单例的双重检查锁定
 
-`routes.py` 的 `get_index()` 使用双重检查锁定模式（`if _index is not None` → `with _index_lock:` → `if _index is not None`），防止多个并发请求同时触发索引重建。修改索引加载逻辑时必须保持此模式，否则高并发下可能多次重建或出现竞态条件。
+`index_singleton.py` 的 `get_index()` 使用双重检查锁定模式（`if _index is not None` → `with _index_lock:` → `if _index is not None`），防止多个并发请求触发索引重建。该单例被 RAG API 和 CrewAI RAG 工具共享——修改索引加载逻辑时必须保持此模式，否则高并发下可能多次重建或出现竞态条件。
+
+### CrewAI Agent 同步/异步桥接
+
+`agent_routes.py` 使用 `asyncio.to_thread(crew.kickoff)` 将 CrewAI 的同步 `kickoff()` 方法放入线程池执行，避免阻塞 FastAPI 事件循环。`MCPBaiduSearchTool` 和 `MCPTavilySearchTool` 内部使用 `asyncio.run()` 在同步 `_run()` 中运行异步 MCP 协议——每次工具调用都启动新的 MCP stdio 子进程（短生命周期），并通过 `PYTHONPATH` 和 `PYTHONIOENCODING=utf-8` 环境变量确保子进程模块导入和编码正确。
 
 ### XSS 防护：Markdown 输出必须消毒
 
@@ -312,4 +347,6 @@ API 返回给客户端的错误消息不应包含内部路径、堆栈跟踪或�
 | 用户文件向量库 | FAISS (`IndexFlatIP` + `IndexIDMap`，内积 = 余弦相似度) |
 | 后端 | FastAPI + uvicorn |
 | 前端 | React 18 + Vite 5，Inter 字体，Slate 色系，`marked` 库渲染 GFM |
+| Agent 框架 | CrewAI（Agent + Task + Crew + 自定义 BaseTool） |
+| MCP | FastMCP (服务器) + MCP Python SDK (客户端/stdio 子进程桥接) |
 | 文件解析 | PDF: PyMuPDF / Word: python-docx / PPT: python-pptx / Excel: openpyxl |

@@ -12,12 +12,14 @@ from llama_index.core.schema import QueryBundle
 from src.config import (
     TOP_K_RETRIEVE, TOP_K_RERANK,
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL,
+    DEEPSEEK_REASONING_MODEL,
 )
 from src.rag.llm import get_llm
 from src.rag.reranker import ModelScopeReranker
 from src.rag.prompts import (
     CONSTRUCTION_QA_PROMPT, CONSTRUCTION_SYSTEM_PROMPT,
     CONSTRUCTION_JSON_SYSTEM_PROMPT, CONSTRUCTION_JSON_QA_TMPL,
+    CONSTRUCTION_QA_TMPL,
 )
 
 
@@ -294,3 +296,159 @@ def _extract_json(text: str) -> dict | None:
             pass
 
     return None
+
+
+async def astream_query_reasoning(
+    index: VectorStoreIndex, question: str, user_index=None,
+) -> AsyncGenerator[Tuple[str, Any], None]:
+    """真流式 RAG 查询 — DeepSeek Reasoner 原生思维链
+
+    与 astream_query_structured 的差异：
+    - 使用 DEEPSEEK_REASONING_MODEL（deepseek-reasoner）
+    - stream: True（真流式，逐 token 到达）
+    - LLM 返回 reasoning_content（思维链）+ content（回答）
+    - 不使用 JSON 结构化 Prompt，推理内容为原生思维链
+
+    Yields:
+        ("reasoning", str)  — 思考过程（流式，DeepSeek Reasoner 原生思维链）
+        ("token", str)      — 回答文本（流式）
+        ("source", dict)    — 引用来源
+        ("done", None)      — 流结束
+        ("error", str)      — 出错
+    """
+    from src.config import USER_TOP_K
+
+    reranker = ModelScopeReranker(top_n=TOP_K_RERANK)
+
+    # ── 检索 ──
+    retriever = index.as_retriever(similarity_top_k=TOP_K_RETRIEVE)
+    nodes = await retriever.aretrieve(question)
+
+    user_results = []
+    if user_index is not None and user_index.has_files():
+        user_results = await user_index.asearch(question, top_k=USER_TOP_K)
+
+    if not nodes and not user_results:
+        yield ("error", "未检索到相关规范条文或用户文件内容，请尝试更换问法。")
+        return
+
+    # ── 重排序 ──
+    if nodes:
+        query_bundle = QueryBundle(question)
+        nodes = reranker._postprocess_nodes(nodes, query_bundle)
+
+    # ── 组装上下文 ──
+    context_parts = []
+    if user_results:
+        user_context = "\n\n".join(
+            f"【用户上传文件: {r['filename']}】\n{r['content']}"
+            for r in user_results
+        )
+        context_parts.append(user_context)
+    if nodes:
+        standard_context = "\n\n".join(
+            f"[{n.metadata.get('standard_id', '')} "
+            f"{n.metadata.get('chapter', '')} §{n.metadata.get('clause', '')}]\n"
+            f"{n.get_content()}"
+            for n in nodes
+        )
+        context_parts.append(standard_context)
+
+    context_str = "\n\n---\n\n".join(context_parts)
+    prompt_text = CONSTRUCTION_QA_TMPL.format(
+        context_str=context_str, query_str=question
+    )
+
+    # ── 真流式请求 DeepSeek Reasoner ──
+    url = f"{DEEPSEEK_BASE_URL}/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": DEEPSEEK_REASONING_MODEL,
+        "messages": [
+            {"role": "system", "content": CONSTRUCTION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt_text},
+        ],
+        "stream": True,
+        "temperature": 0.1,
+        "max_tokens": 4096,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            async with client.stream("POST", url, headers=headers, json=payload) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    yield ("error", f"DeepSeek API 返回 {resp.status_code}: {body[:200]}")
+                    return
+
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+
+                    data_str = line[6:]  # 去掉 "data: " 前缀
+                    if data_str == "[DONE]":
+                        break
+
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    choices = data.get("choices", [])
+                    if not choices:
+                        continue
+
+                    delta = choices[0].get("delta", {})
+
+                    # 思维链（reasoning_content 先于 content 到达）
+                    rc = delta.get("reasoning_content", "")
+                    if rc:
+                        yield ("reasoning", rc)
+
+                    # 回答内容
+                    c = delta.get("content", "")
+                    if c:
+                        yield ("token", c)
+
+    except httpx.TimeoutException:
+        yield ("error", "请求 DeepSeek API 超时，请稍后重试。")
+        return
+    except Exception as e:
+        yield ("error", str(e))
+        return
+
+    # ── 用户文件来源 ──
+    for r in user_results:
+        yield ("source", {
+            "standard_id": r.get("filename", ""),
+            "standard_name": "",
+            "chapter": "",
+            "clause": "",
+            "content": r.get("content", "")[:500],
+            "score": r.get("score", 0.0),
+            "source_type": "user",
+            "file_id": r.get("file_id", ""),
+            "filename": r.get("filename", ""),
+        })
+        await asyncio.sleep(0.01)
+
+    # ── 标准库来源 ──
+    for node in nodes:
+        metadata = node.metadata or {}
+        yield ("source", {
+            "standard_id": metadata.get("standard_id", ""),
+            "standard_name": metadata.get("standard_name", ""),
+            "chapter": metadata.get("chapter", ""),
+            "clause": metadata.get("clause", ""),
+            "content": node.get_content()[:500],
+            "score": round(node.score or 0.0, 4),
+            "source_type": "standard",
+            "file_id": "",
+            "filename": "",
+        })
+        await asyncio.sleep(0.01)
+
+    yield ("done", None)

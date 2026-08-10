@@ -16,7 +16,7 @@ from src.config import (
     USE_REASONING,
 )
 from src.rag.index_singleton import get_index
-from src.rag.query import query_with_sources, get_streaming_query_engine, astream_query_structured
+from src.rag.query import query_with_sources, get_streaming_query_engine, astream_query_structured, astream_query_reasoning
 from src.api.files import get_user_index
 
 router = APIRouter()
@@ -88,12 +88,12 @@ async def chat_stream(request: ChatRequest):
     async def event_generator():
         try:
             if USE_REASONING:
-                # ===== 结构化模式：JSON 分析摘要 + Markdown 回答 =====
-                async for event_type, data in astream_query_structured(
+                # ===== 推理模式：DeepSeek Reasoner 真流式 + 原生思维链 =====
+                async for event_type, data in astream_query_reasoning(
                     index, request.question, user_index=get_user_index()
                 ):
-                    if event_type == "analysis":
-                        yield f"data: {json.dumps({'type': 'analysis', 'data': data}, ensure_ascii=False)}\n\n"
+                    if event_type == "reasoning":
+                        yield f"data: {json.dumps({'type': 'reasoning', 'content': data}, ensure_ascii=False)}\n\n"
                     elif event_type == "token":
                         yield f"data: {json.dumps({'type': 'token', 'content': data}, ensure_ascii=False)}\n\n"
                     elif event_type == "source":

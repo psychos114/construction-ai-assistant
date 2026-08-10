@@ -65,7 +65,7 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  max-width: 960px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 0 24px;
 }
@@ -517,7 +517,7 @@ body {
 .message {
   display: flex;
   flex-direction: column;
-  max-width: 82%;
+  max-width: 90%;
   animation: fadeIn 200ms ease;
 }
 
@@ -860,12 +860,37 @@ body {
   height: 18px;
 }
 
+/* --- Input Footer --- */
+.chat-input-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.clear-history-btn {
+  font-size: 0.6875rem;
+  color: var(--color-muted-fg);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s;
+  white-space: nowrap;
+}
+
+.clear-history-btn:hover {
+  color: var(--color-danger, #ef4444);
+}
+
 /* --- Disclaimer --- */
 .chat-disclaimer {
   text-align: center;
   font-size: 0.6875rem;
   color: var(--color-muted-fg);
-  margin-top: 8px;
+  margin-top: 0;
   user-select: none;
 }
 

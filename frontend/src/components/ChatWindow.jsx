@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { sendMessageStream, sendAgentMessageStream } from "../api/chat";
+import { sendMessageStream } from "../api/chat";
 import MessageBubble from "./MessageBubble";
 
 const SUGGESTED = [
@@ -13,7 +13,6 @@ function ChatWindow() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [mode, setMode] = useState("rag"); // "rag" | "agent"
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(null);
@@ -29,13 +28,44 @@ function ChatWindow() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // 页面加载时从 localStorage 恢复历史消息
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("chat-history");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setMessages(parsed);
+        }
+      }
+    } catch {
+      // JSON 解析失败则忽略
+    }
+  }, []);
+
+  // 消息变化时自动保存到 localStorage
+  useEffect(() => {
+    if (messages.length === 0) return;
+    // 保存前清洗：未完成的流式消息标记为已结束
+    const toSave = messages.map((msg) =>
+      msg.streaming
+        ? { ...msg, streaming: false, content: msg.content || "[回答中断—刷新页面时流未完成]" }
+        : msg
+    );
+    try {
+      localStorage.setItem("chat-history", JSON.stringify(toSave));
+    } catch {
+      // localStorage 满了则静默失败
+    }
+  }, [messages]);
+
   const handleSend = useCallback(async (text) => {
     const question = (text || input).trim();
     if (!question || loading) return;
 
     setInput("");
     const userMsg = { role: "user", content: question };
-    const aiMsg = { role: "assistant", content: "", analysis: null, sources: [], streaming: true };
+    const aiMsg = { role: "assistant", content: "", reasoning: "", analysis: null, sources: [], streaming: true };
     setMessages((prev) => [...prev, userMsg, aiMsg]);
     setLoading(true);
 
@@ -43,10 +73,13 @@ function ChatWindow() {
       // 创建 AbortController 以支持取消请求
       const controller = new AbortController();
       abortRef.current = controller;
-      const stream = mode === "agent"
-        ? sendAgentMessageStream(question, { signal: controller.signal })
-        : sendMessageStream(question, { signal: controller.signal });
-
+      const stream =
+      sendMessageStream(
+        question,
+        {
+            signal: controller.signal
+        }
+      );
       for await (const event of stream) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
@@ -55,7 +88,9 @@ function ChatWindow() {
           // 不可变更新：创建新对象，不修改 prev state（React 严格模式安全）
           let updates = {};
 
-          if (event.type === "analysis") {
+          if (event.type === "reasoning") {
+            updates = { reasoning: last.reasoning + event.content };
+          } else if (event.type === "analysis") {
             updates = { analysis: event.data };
           } else if (event.type === "token") {
             updates = { content: last.content + event.content };
@@ -96,7 +131,7 @@ function ChatWindow() {
       abortRef.current = null;
       setLoading(false);
     }
-  }, [input, loading, mode]);
+  }, [input, loading]);
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -144,22 +179,6 @@ function ChatWindow() {
       </div>
 
       <div className="chat-input-area">
-        <div className="mode-toggle">
-          <button
-            className={`mode-btn ${mode === "rag" ? "active" : ""}`}
-            onClick={() => setMode("rag")}
-            disabled={loading}
-          >
-            规范知识库
-          </button>
-          <button
-            className={`mode-btn ${mode === "agent" ? "active" : ""}`}
-            onClick={() => setMode("agent")}
-            disabled={loading}
-          >
-            Agent 智能搜索
-          </button>
-        </div>
         <div className="chat-input-row">
           <textarea
             ref={textareaRef}
@@ -181,7 +200,21 @@ function ChatWindow() {
             </svg>
           </button>
         </div>
-        <p className="chat-disclaimer">答案仅供参考，实际工程请以官方发布的最新标准规范为准</p>
+        <div className="chat-input-footer">
+          {messages.length > 0 && (
+            <button
+              className="clear-history-btn"
+              onClick={() => {
+                localStorage.removeItem("chat-history");
+                setMessages([]);
+              }}
+              disabled={loading}
+            >
+              清空对话
+            </button>
+          )}
+          <p className="chat-disclaimer">答案仅供参考，实际工程请以官方发布的最新标准规范为准</p>
+        </div>
       </div>
     </div>
   );
