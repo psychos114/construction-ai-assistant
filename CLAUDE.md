@@ -51,6 +51,9 @@ cd backend && python scripts/03_auto_crawler.py --dry-run --priority S        # 
 
 # 从官方来源下载规范（flk.npc.gov.cn / openstd.samr.gov.cn）
 cd backend && python scripts/01_download.py --type law
+
+# 生成项目技术文档 (Word)
+cd scripts && python generate_doc.py
 ```
 
 ### MCP 服务器
@@ -86,8 +89,8 @@ curl -X POST http://localhost:8000/api/chat/agent \
 用户提问 → POST /api/chat/stream → VectorStoreIndex 检索 (top_k=10)
          → ModelScopeReranker 重排序 (top_n=5) → DeepSeek LLM 生成 → SSE 流式响应
 
-USE_REASONING=true 时额外增加：
-         用户文件 FAISS 检索 (top_k=5) → 合并上下文（用户文件在前）→ httpx 直连 DeepSeek → JSON 解析 → 伪流式输出
+USE_REASONING=true 时切换为推理模式（astream_query_reasoning）：
+         用户文件 FAISS 检索 (top_k=5) → 合并上下文（用户文件在前）→ httpx 流式直连 DeepSeek Reasoner → 真流式 SSE（reasoning_content 原生思维链 + content 回答）
 ```
 
 **重要**：用户文件 FAISS 检索**仅在 `USE_REASONING=true` 模式**下生效。标准模式（`USE_REASONING=false`）只检索标准知识库。
@@ -98,27 +101,23 @@ USE_REASONING=true 时额外增加：
 
 | 路径 | 端点 | 模式 | 说明 |
 |------|------|------|------|
-| **RAG 流式** | `POST /api/chat/stream` | SSE 流式 | 标准 LlamaIndex 查询引擎，逐 token 流式输出；`USE_REASONING=true` 时切换为结构化 JSON 模式 |
+| **RAG 流式** | `POST /api/chat/stream` | SSE 流式 | 标准 LlamaIndex 查询引擎，逐 token 流式输出；`USE_REASONING=true` 时切换为 DeepSeek Reasoner 真流式推理（含原生思维链） |
 | **RAG 非流式** | `POST /api/chat` | JSON 响应 | 非流式便捷接口 |
-| **CrewAI Agent** | `POST /api/chat/agent` | JSON 响应（同步） | CrewAI Agent 管线：RAG 知识库 + 百度搜索 + Tavily 搜索三工具协作，`asyncio.to_thread()` 包装同步 `crew.kickoff()` |
+| **CrewAI Agent** | `POST /api/chat/agent` | SSE 流式 | CrewAI Agent 管线：RAG 知识库 + 百度搜索 + Tavily 搜索三工具协作，`asyncio.to_thread()` 包装同步 `crew.kickoff()`，结果通过 SSE 伪流式输出 |
 
-### 结构化输出模式（USE_REASONING=true）
+**前端默认采用「合并流式」模式**：`ChatWindow` 实际调用的是 `sendCombinedStream()`（`chat.js`），它**并行**发起 RAG 流（`/api/chat/stream`）与 Agent 流（`/api/chat/agent`），用一个共享队列实时合并两条流的事件，两者都结束后才发 `done`。因此一次提问会同时得到「规范回答 + 引用来源」与「联网搜索回答」，两条 token 交错到达。README 已将这种双通道输出列为待收敛的已知限制（Roadmap 计划改为后端统一编排）。上表的三条路径是后端能力，合并流式是前端的编排层。
 
-当 `USE_REASONING=true` 时，流式接口使用 `astream_query_structured()`。该函数**绕过 LlamaIndex 的 LLM 抽象层**，直接通过 `httpx` 请求 DeepSeek Chat API（非流式，保证 JSON 完整），要求 LLM 返回结构化 JSON。注意：此模式仍使用 `DEEPSEEK_MODEL`（默认 `deepseek-chat`），而非 `DEEPSEEK_REASONING_MODEL`：
+### 推理模式（USE_REASONING=true）
 
-```json
-{
-  "analysis_summary": {
-    "question": "用户问题概括",
-    "retrieval": "检索到的规范条文摘要",
-    "reasoning": "分析推理过程",
-    "conclusion": "分析结论"
-  },
-  "answer": "最终回答（Markdown 格式）"
-}
-```
+当 `USE_REASONING=true` 时，流式接口使用 `astream_query_reasoning()`。该函数**绕过 LlamaIndex 的 LLM 抽象层**，直接通过 `httpx` 流式请求 DeepSeek Reasoner API（`deepseek-reasoner`），获取原生思维链（`reasoning_content`）+ 回答内容（`content`），两者均通过 SSE 真流式输出：
 
-前端收到后先展示 `analysis` 事件（可折叠的分析摘要面板），再逐字渲染 `answer`。此模式使用 `CONSTRUCTION_JSON_SYSTEM_PROMPT` + `CONSTRUCTION_JSON_QA_TMPL` 提示词模板。
+- SSE 事件 `reasoning` — DeepSeek Reasoner 的原生思维链（思考过程），前端在可折叠面板中展示
+- SSE 事件 `token` — 最终回答文本，逐 token 流式到达
+- SSE 事件 `source` — 引用来源（用户文件优先，标准库在后）
+
+此模式使用 `CONSTRUCTION_SYSTEM_PROMPT` + `CONSTRUCTION_QA_TMPL`（纯文本 QA 模板，非 JSON 结构化模板），因为推理模型的思维链本身提供了结构化分析能力。
+
+**注意**：`astream_query_structured()`（旧的 JSON 结构化模式，使用 `deepseek-chat` + JSON prompt）仍存在于 `query.py` 中但**已不再被路由调用**，保留作参考。
 
 `USE_REASONING=false`（默认）时使用标准 LlamaIndex 流式查询引擎，走 `CONSTRUCTION_SYSTEM_PROMPT` + `CONSTRUCTION_QA_PROMPT`。
 
@@ -135,7 +134,7 @@ USE_REASONING=true 时额外增加：
 
 ### CrewAI Agent 管线（独立于 RAG 管线）
 
-CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成到 API 路由中（`POST /api/chat/agent`）：
+CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成到 API 路由中（`POST /api/chat/agent`），通过 SSE 流式返回结果：
 
 ```
 用户问题 → agent_routes.py (asyncio.to_thread)
@@ -146,7 +145,7 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成�
      └─ src/tools/mcp_tools.py: MCPTavilySearchTool → MCP stdio 子进程 → tavily_search
   → src/crew/agents.py: create_engineer_agent(llm, tools) → CrewAI Agent
   → src/crew/tasks.py: create_engineering_task(agent, question) → CrewAI Task
-  → crew.kickoff() → 结构化工程分析报告
+  → crew.kickoff() → 结构化工程分析报告 → SSE 伪流式输出 (token → done)
 ```
 
 **关键实现细节**：
@@ -170,30 +169,30 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成�
 |------|------|------|
 | 入口 | `src/main.py` | FastAPI 应用，CORS 配置（硬编码 `localhost:3000` / `127.0.0.1:3000`），挂载三个路由模块（`router`、`files_router`、`agent_router`），启动时 `validate_config()` 校验 API Key；`APP_ENV=development` 时启用 `/docs` |
 | 配置 | `src/config.py` | 所有环境变量和 RAG 参数，从项目根目录 `.env` 读取；含 `validate_config()` 校验必填 API Key |
-| API 路由 | `src/api/routes.py` | `GET /api/health`、`POST /api/chat`、`POST /api/chat/stream`；通过 `index_singleton.get_index()` 获取索引；`USE_REASONING` 分支选择结构化 JSON 或标准流式模式 |
+| API 路由 | `src/api/routes.py` | `GET /api/health`、`POST /api/chat`、`POST /api/chat/stream`；通过 `index_singleton.get_index()` 获取索引；`USE_REASONING` 分支选择推理模式（`astream_query_reasoning`，真流式思维链）或标准 LlamaIndex 流式模式 |
 | API Schema | `src/api/schemas.py` | Pydantic 请求/响应模型（含用户文件相关 schema） |
-| Agent API | `src/api/agent_routes.py` | `POST /api/chat/agent` — CrewAI Agent 端点：组装三工具（RAG + Baidu + Tavily）+ Engineer Agent + Task → `asyncio.to_thread(crew.kickoff)` → JSON 响应 |
+| Agent API | `src/api/agent_routes.py` | `POST /api/chat/agent` — CrewAI Agent 端点：组装三工具（RAG + Baidu + Tavily）+ Engineer Agent + Task → `asyncio.to_thread(crew.kickoff)` → SSE 流式响应（伪流式，逐字符输出） |
 | 文件 API | `src/api/files.py` | `POST /api/files/upload`、`GET /api/files`、`GET /api/files/{id}`、`DELETE /api/files/{id}`、`POST /api/files/search` |
 | MCP 服务器 | `src/mcp_server/server.py` | MCP (Model Context Protocol) 服务器，基于 **FastMCP** 框架。通过 `@mcp.tool()` 装饰器注册 `baidu_search` 和 `tavily_search` 工具，stdio 模式运行，供 MCP 客户端（Claude Code 或 CrewAI agent）调用 |
 | MCP 工具 | `src/mcp_server/baidu_tool.py` | `search_baidu()` 包装，供 MCP 服务器调用 |
 | MCP 工具 | `src/mcp_server/tavily_tool.py` | Tavily Search API 封装，调用 `TavilyClient` 返回搜索结果 |
 | 百度搜索 | `src/mcp_server/baidu_tools.py` | 百度网页搜索爬虫：HTML 解析（BeautifulSoup + 自定义 HTMLParser 双解析器）、重定向跟踪、分页、反爬处理 |
-| 共享模块 | `src/shared/` | `common.py`（SearchResult/Evidence 数据类）、`config.py`（百度搜索参数）、`crawler.py`（Article 抓取器，当前为占位实现） |
+| 共享模块 | `src/shared/` | `common.py`（SearchResult/Evidence 数据类）、`config.py`（百度搜索参数）、`crawler.py`（Article 抓取器，当前为占位实现）。**注意**：此模块当前未被任何代码导入，为早期遗留代码 |
 | **索引单例** | `src/rag/index_singleton.py` | 共享索引单例：双重检查锁定 + `get_index()` / `reset_index()`。被 RAG API 和 CrewAI RAG 工具共用 |
 | **CrewAI Agent** | `src/agent/agent.py` | 早期 Agent 工厂原型（`create_agents()`），当前**未被使用**，保留作参考 |
 | **CrewAI MCP 客户端** | `src/agent/mcp_client.py` | 异步 MCP 客户端：通过 stdio 连接 MCP 服务器，列出工具 + 调用示例。独立运行脚本，非模块导入 |
 | **CrewAI Crew** | `src/crew/agents.py` | 工程师 agent 定义（`create_engineer_agent(llm, tools)`：role/goal/backstory/tools/llm） |
 | **CrewAI Tasks** | `src/crew/tasks.py` | 工程问题分析任务模板（`create_engineering_task(agent, question)`）：结构化输出要求（原因→方案→专业语言） |
-| **CrewAI Runner** | `src/crew/crew.py` | Crew 编排器（`run_crew(agent, task)`）：组装 agent + task 并 `kickoff()` |
+| **CrewAI Runner** | `src/crew/crew.py` | Crew 编排器（`run_crew(agent, task)`）：组装 agent + task 并 `kickoff()`。**注意**：此模块仅被 `test_crew.py` 使用；`agent_routes.py` 直接实例化 `crewai.Crew` 而不经过此封装 |
 | **CrewAI LLM** | `src/llm/model.py` | DeepSeek LLM 工厂（供 CrewAI 使用，通过 `crewai.LLM` 包装），读取 `DEEPSEEK_API_KEY`，硬编码 `deepseek-chat` 模型 |
 | **CrewAI MCP 工具** | `src/tools/mcp_tools.py` | `MCPBaiduSearchTool` + `MCPTavilySearchTool` — CrewAI `BaseTool` 子类，每次调用启动 MCP stdio 子进程执行搜索。`_run()` 内部调用 `asyncio.run()` 桥接同步/异步 |
 | **CrewAI RAG 工具** | `src/tools/rag_tool.py` | `RAGKnowledgeBaseTool` — CrewAI `BaseTool` 子类，将 LlamaIndex 知识库检索封装为 Agent 工具。通过 `index_singleton.get_index()` 获取共享索引，调用 `query_with_sources()` 返回带来源引用的格式化结果 |
-| LLM (RAG) | `src/rag/llm.py` | `get_llm()` 工厂函数，通过 OpenAI 兼容接口 (`OpenAILike`) 接入 DeepSeek-Chat，默认 max_tokens=2048。支持可选参数 `model`、`temperature`、`max_tokens`。**注意**：此模块供 LlamaIndex RAG 使用；CrewAI 使用独立的 `src/llm/model.py`；结构化 JSON 模式 (`USE_REASONING=true`) 不经过此模块，而是直接用 `httpx` 请求 DeepSeek API，max_tokens=4096 |
+| LLM (RAG) | `src/rag/llm.py` | `get_llm()` 工厂函数，通过 OpenAI 兼容接口 (`OpenAILike`) 接入 DeepSeek-Chat，默认 max_tokens=2048。支持可选参数 `model`、`temperature`、`max_tokens`。**注意**：此模块供 LlamaIndex RAG 使用（标准流式模式）；CrewAI 使用独立的 `src/llm/model.py`；推理模式 (`USE_REASONING=true`) 不经过此模块，而是直接用 `httpx` 流式请求 DeepSeek Reasoner API，max_tokens=4096 |
 | Embedding | `src/rag/embedding.py` | 双模式：`LocalEmbedding` (sentence-transformers + BAAI/bge-small-zh-v1.5，离线) 和 `ModelScopeEmbedding` (API，Qwen3-Embedding-8B)；由 `EMBEDDING_MODE` 控制 |
 | Reranker | `src/rag/reranker.py` | `ModelScopeReranker` 封装 ModelScope Rerank API；失败时打印警告 + 降级为原始排序 |
 | 索引 | `src/rag/indexing.py` | 文档加载、SentenceSplitter 中文切分、IngestionPipeline 处理、索引构建与持久化 |
-| 查询 | `src/rag/query.py` | `get_query_engine()` 非流式、`get_streaming_query_engine()` 流式、`query_with_sources()` 非流式便捷封装、`astream_query_structured()` 结构化 JSON 模式（httpx 直连 DeepSeek，输出 analysis/token/source 事件） |
-| Prompt | `src/rag/prompts.py` | 两套提示词：标准模式 (`CONSTRUCTION_SYSTEM_PROMPT` + `CONSTRUCTION_QA_PROMPT`) 和 JSON 结构化模式 (`CONSTRUCTION_JSON_SYSTEM_PROMPT` + `CONSTRUCTION_JSON_QA_TMPL`) |
+| 查询 | `src/rag/query.py` | `get_query_engine()` 非流式、`get_streaming_query_engine()` 流式、`query_with_sources()` 非流式便捷封装、`astream_query_reasoning()` 推理模式（httpx 流式直连 DeepSeek Reasoner，输出 reasoning/token/source 事件）、`astream_query_structured()` 旧 JSON 结构化模式（已废弃，保留作参考） |
+| Prompt | `src/rag/prompts.py` | 三套提示词：标准流式模式 (`CONSTRUCTION_SYSTEM_PROMPT` + `CONSTRUCTION_QA_PROMPT`，由 `CONSTRUCTION_QA_TMPL` 格式化而来)、推理模式 (`CONSTRUCTION_SYSTEM_PROMPT` + `CONSTRUCTION_QA_TMPL`，直接使用纯文本模板)、JSON 结构化模式 (`CONSTRUCTION_JSON_SYSTEM_PROMPT` + `CONSTRUCTION_JSON_QA_TMPL`，已废弃但仍保留) |
 | 文件解析 | `src/rag/file_parser.py` | 多格式解析：PDF (PyMuPDF)、Word (python-docx)、PPT (python-pptx)、Excel (openpyxl)、TXT/Markdown；统一入口 `parse_file()` |
 | 用户索引 | `src/rag/user_index.py` | `UserFAISSIndex` 类：管理用户上传文件的 FAISS 索引（增删查 + 持久化），使用 `IndexFlatIP` + `IndexIDMap` 支持按 ID 删除 |
 
@@ -204,7 +203,7 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成�
 - `EMBEDDING_DIM=512` — **必须与 Embedding 模型输出维度一致**（当前匹配 BAAI/bge-small-zh-v1.5）
 - `ALLOWED_EXTENSIONS`: `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.txt`, `.md`
 - `MAX_FILE_SIZE`: 50MB
-- `USE_REASONING`: `"false"` (默认，标准 LlamaIndex 流式) 或 `"true"` (结构化 JSON 输出)
+- `USE_REASONING`: `"false"` (默认，标准 LlamaIndex 流式) 或 `"true"` (DeepSeek Reasoner 真流式推理，含原生思维链)
 - 索引存 `backend/storage/`，用户 FAISS 索引存 `backend/storage/user_faiss/`，用户上传文件存 `backend/uploads/`，文档存 `backend/src/data/documents/`
 
 ### 前端 (frontend/)
@@ -214,15 +213,15 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成�
 | `src/main.jsx` | React 入口，挂载 App |
 | `src/App.jsx` | 根组件：header（状态指示灯）+ FilePanel 侧边栏 + ChatWindow 主区域 |
 | `src/App.css` | 全局样式 (~1078 行)：Design tokens (CSS 变量 — Slate 色系)、布局、所有组件样式、响应式断点、动画 |
-| `src/components/ChatWindow.jsx` | 对话主体：消息列表、SSE 流式渲染（含 analysis 事件处理）、建议问题、输入框 |
-| `src/components/MessageBubble.jsx` | 单条消息：用户/助手气泡、`marked` 库渲染 GFM → `DOMPurify.sanitize()` 消毒、分析摘要折叠面板（琥珀色、流式时自动展开、完成后自动折叠）、来源引用卡片 |
+| `src/components/ChatWindow.jsx` | 对话主体：消息列表、SSE 流式渲染（含 `reasoning`/`analysis`/`token`/`source`/`tool_call` 事件处理）、建议问题、输入框、localStorage 历史记录持久化（页面刷新恢复对话）、清空对话按钮 |
+| `src/components/MessageBubble.jsx` | 单条消息：用户/助手气泡、`marked` 库渲染 GFM → `DOMPurify.sanitize()` 消毒、推理思维链折叠面板（紫色，`reasoning` 事件内容，流式时自动展开）、分析摘要折叠面板（琥珀色，`analysis` 事件内容，流式时自动展开、完成后自动折叠）、来源引用卡片 |
 | `src/components/SourceCard.jsx` | 引用卡片：支持标准规范引用和用户文件引用两种样式 |
 | `src/components/FilePanel.jsx` | 文件管理侧边栏：可折叠、文件列表（含图标/大小/时间）、删除确认 |
 | `src/components/FileUploadZone.jsx` | 文件上传区：拖拽/点击上传、多状态（default/dragging/uploading/success/error）、客户端校验 |
-| `src/api/chat.js` | 对话 API：`sendMessage()` 非流式、`sendMessageStream()` SSE 流式（AsyncGenerator，支持 AbortController 取消）、`healthCheck()` |
+| `src/api/chat.js` | 对话 API：`sendMessage()` 非流式、`sendMessageStream()` SSE 流式（RAG，AsyncGenerator，支持 AbortController 取消）、`sendAgentMessageStream()` SSE 流式（Agent）、`sendCombinedStream()` 合并流式（并行 RAG + Agent，UI 默认路径）、`healthCheck()` |
 | `src/api/files.js` | 文件 API：`uploadFile()`、`listFiles()`、`deleteFile()` |
 
-**数据流**: Vite 开发服务器 (port 3000) 通过 `vite.config.js` 中 `proxy: { "/api": { target: "http://127.0.0.1:8000" } }` 代理到 FastAPI 后端。前端使用 SSE (`text/event-stream`) 接收流式响应，事件类型：`analysis`（结构化分析摘要）、`token`（逐字文本）、`source`（引用来源）、`done`、`error`。修改 `FRONTEND_PORT` 时需同步更新 CORS origins（`main.py`）和此 proxy target。
+**数据流**: Vite 开发服务器 (port 3000) 通过 `vite.config.js` 中 `proxy: { "/api": { target: "http://127.0.0.1:8000" } }` 代理到 FastAPI 后端。前端使用 SSE (`text/event-stream`) 接收流式响应，事件类型：`reasoning`（DeepSeek Reasoner 原生思维链，仅 USE_REASONING=true）、`analysis`（结构化分析摘要，已废弃但前端仍兼容）、`token`（逐字文本）、`source`（引用来源，含 `source_type: "standard"|"user"|"tool"`）、`tool_call`（Agent 工具调用记录）、`done`、`error`。修改 `FRONTEND_PORT` 时需同步更新 CORS origins（`main.py`）和此 proxy target。
 
 ### 数据管道脚本
 
@@ -232,6 +231,7 @@ CrewAI 管线是 RAG 管线之外的**第二条用户交互路径**，已集成�
 | `scripts/02_setup_knowledge_base.py` | 初始化文档目录结构，PDF→TXT 提取 (PyMuPDF + OCR 支持)，知识库统计 |
 | `scripts/03_auto_crawler.py` | 从 gf.cabr-fire.com 批量抓取标准全文：搜索→匹配→提取章节→合并保存 |
 | `scripts/build_index.py` | CLI 工具：构建/重建/查看向量索引状态 |
+| `scripts/generate_doc.py` | 项目技术文档生成器：自动生成 `项目详情.docx`（中文），包含架构详解、数据流、逐文件说明、设计决策、环境变量等完整项目文档 |
 
 **知识库文档组织**: `backend/src/data/documents/` 下按分类存放：
 - `国家标准GB/结构设计/`, `施工验收/`, `安全规范/`, `材料标准/`, `检测与试验/`
@@ -289,13 +289,21 @@ return await loop.run_in_executor(None, lambda: self._model.encode(...))
 
 `MessageBubble.jsx` 使用 `DOMPurify.sanitize()` 消毒 `marked` 库渲染的 HTML，防止 LLM 输出中的恶意脚本。修改前端渲染逻辑时不能跳过此步骤。`dompurify` 已在 `package.json` 中声明为依赖。
 
+### ChatWindow 历史记录持久化到 localStorage
+
+`ChatWindow.jsx` 通过四个 `useEffect` 管理对话历史：组件挂载时从 `localStorage` 恢复历史（`chat-history` key）、每次 `messages` 变化时自动保存。**保存前会将未完成的流式消息（`streaming: true`）标记为已结束**，避免页面刷新后残留不完整状态。"清空对话"按钮同时清除 `localStorage` 和组件 state。修改历史持久化逻辑时注意：React 严格模式在开发环境会双重调用 effect，确保保存逻辑是幂等的。
+
 ### PDF 文件句柄必须释放
 
 `file_parser.py` 中 PyMuPDF (`fitz.open()`) 返回的 `Document` 对象必须在 `try/finally` 中显式调用 `.close()`，否则会导致文件句柄泄漏。长时间运行后可能耗尽文件描述符。
 
 ### SSE 流支持取消
 
-前端 `chat.js` 的 `sendMessageStream()` 接受 `options.signal`（AbortController），用于取消正在进行的 SSE 流。修改流式请求逻辑时应保持此支持，否则用户切换页面后流仍占用后端连接。
+前端 `chat.js` 的 `sendMessageStream()` 和 `sendAgentMessageStream()` 均接受 `options.signal`（AbortController），用于取消正在进行的 SSE 流。修改流式请求逻辑时应保持此支持，否则用户切换页面后流仍占用后端连接。
+
+### 前端 SSE 解析使用 ReadableStream（非 EventSource）
+
+`chat.js` 的 `parseSSEStream()` 使用 `resp.body.getReader()`（`ReadableStream` API）手动解析 SSE 流，**而非浏览器内置的 `EventSource`**。这是因为 `EventSource` 仅支持 GET 请求且无法自定义请求头，而本项目的流式端点需要 POST + JSON body。修改 SSE 解析逻辑时需保持此模式，不可替换为 `EventSource`。
 
 ### 错误消息脱敏
 
@@ -311,6 +319,9 @@ API 返回给客户端的错误消息不应包含内部路径、堆栈跟踪或�
 | `design-system/default/MASTER.md` | 前端设计系统规范：Slate `#475569` 色系、Inter 字体、密度 8/10、组件 CSS 规格 |
 | `design-system/tumu-zhushou/` | 项目专属设计系统目录（pages/ 子目录，当前为空） |
 | `README.md` | 用户向项目主页：特性介绍、快速开始、使用指南、架构概览 |
+| `docs/assets/readme/` | README 界面截图（项目首页、RAG 回答卡片），由 `README.md` 引用 |
+| `.claude/mcp.json` | Claude Code 的 MCP 服务器配置：注册 `civil-engineering` 服务器（stdio 模式，指向 `backend/src/mcp_server/server.py`） |
+| `.claude/skills/` | Claude Code 技能目录（design、brand、slides、ui-styling 等），由 `/skill-name` 斜杠命令触发 |
 
 **知识库覆盖状态**：`backend/src/data/documents/` 下共 231 个 `.txt` 文件。S 级标准 56 项中已收录 31 项（截至 2025-12），部分文件为占位符（仅含元数据，无全文）。数据管线 (`03_auto_crawler.py`) 正在持续扩充中。**注意：以上数字为历史快照，实际文件数随数据管线运行持续增长，以 `backend/src/data/documents/` 目录实际内容为准。**
 
@@ -323,8 +334,8 @@ API 返回给客户端的错误消息不应包含内部路径、堆栈跟踪或�
 | `DEEPSEEK_API_KEY` | — | **必填**，DeepSeek API 密钥 |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | DeepSeek API 地址 |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | 标准对话模型 |
-| `DEEPSEEK_REASONING_MODEL` | `deepseek-reasoner` | 推理模型（已定义但当前未使用；`USE_REASONING=true` 仍用 `DEEPSEEK_MODEL`） |
-| `USE_REASONING` | `false` | 启用结构化 JSON 输出模式（含 analysis_summary）；不影响模型选择 |
+| `DEEPSEEK_REASONING_MODEL` | `deepseek-reasoner` | 推理模型，`USE_REASONING=true` 时由 `astream_query_reasoning()` 使用，通过 httpx 流式直连 DeepSeek Reasoner API 获取原生思维链 |
+| `USE_REASONING` | `false` | 启用 DeepSeek Reasoner 真流式推理模式（含原生思维链）；设为 `true` 时切换模型为 `deepseek-reasoner`，绕过 LlamaIndex LLM 抽象层 |
 | `MODELSCOPE_API_KEY` | — | Embedding/Rerank API 密钥（local embedding 模式不需要） |
 | `TAVILY_API_KEY` | — | Tavily Search API 密钥（MCP 服务器 `tavily_search` 工具需要） |
 | `MODELSCOPE_BASE_URL` | `https://api.modelscope.cn` | ModelScope API 地址 |

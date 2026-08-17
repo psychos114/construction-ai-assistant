@@ -95,6 +95,61 @@ export async function* sendAgentMessageStream(question, options = {}) {
   yield* parseSSEStream(resp);
 }
 
+/**
+ * 合并流式请求 — 同时调用 RAG + Agent，结果实时合并
+ *
+ * RAG 提供：reasoning / token / source（知识库引用）
+ * Agent 提供：token / tool_call（联网搜索结果）
+ * 两条流并行，事件实时合并，全部结束后发 done
+ */
+export async function* sendCombinedStream(question, options = {}) {
+  const queue = [];
+  let pending = 2;
+  let wakeup = null;
+
+  const feed = (event) => {
+    queue.push(event);
+    if (wakeup) { wakeup(); wakeup = null; }
+  };
+
+  // 并行跑 RAG 流
+  (async () => {
+    try {
+      for await (const e of sendMessageStream(question, options)) {
+        if (e.type !== "done") feed(e);
+      }
+    } catch (err) {
+      feed({ type: "error", message: `知识库: ${err.message}` });
+    } finally {
+      pending--;
+    }
+  })();
+
+  // 并行跑 Agent 流
+  (async () => {
+    try {
+      for await (const e of sendAgentMessageStream(question, options)) {
+        if (e.type !== "done") feed(e);
+      }
+    } catch (err) {
+      feed({ type: "error", message: `联网搜索: ${err.message}` });
+    } finally {
+      pending--;
+    }
+  })();
+
+  // 逐个吐出事件，两条流都结束才发 done
+  while (pending > 0 || queue.length > 0) {
+    if (queue.length === 0) {
+      await new Promise((r) => { wakeup = r; });
+    }
+    while (queue.length > 0) {
+      yield queue.shift();
+    }
+  }
+  yield { type: "done" };
+}
+
 /** 健康检查 */
 export async function healthCheck() {
   const resp = await fetch(`${API_BASE}/health`);

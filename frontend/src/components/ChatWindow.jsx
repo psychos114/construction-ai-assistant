@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { sendMessageStream } from "../api/chat";
+import { sendCombinedStream } from "../api/chat";
 import MessageBubble from "./MessageBubble";
 
 const SUGGESTED = [
@@ -73,13 +73,7 @@ function ChatWindow() {
       // 创建 AbortController 以支持取消请求
       const controller = new AbortController();
       abortRef.current = controller;
-      const stream =
-      sendMessageStream(
-        question,
-        {
-            signal: controller.signal
-        }
-      );
+      const stream = sendCombinedStream(question, { signal: controller.signal });
       for await (const event of stream) {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
